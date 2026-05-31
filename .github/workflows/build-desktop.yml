@@ -1,0 +1,210 @@
+name: Build Desktop App
+
+# Triggers:
+#   - Every push to master  → updates the rolling "Latest Build" pre-release
+#   - Push a tag v*.*.*     → creates a proper versioned release
+#   - Manual run            → same as master push (use workflow_dispatch)
+on:
+  push:
+    branches: [master]
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write   # required to create/update releases and push the 'latest' tag
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────────────
+  # BUILD  — three parallel jobs, one per platform / arch
+  # Each job:
+  #   1. Creates a Python venv (native to that runner, so binaries match arch)
+  #   2. Builds the React frontend
+  #   3. Runs electron-builder to produce the installer
+  #   4. Uploads the installer as a workflow artifact for the release job
+  # ──────────────────────────────────────────────────────────────────────────
+  build:
+    strategy:
+      fail-fast: false   # don't cancel sibling jobs if one fails
+      matrix:
+        include:
+          # macOS Apple Silicon (arm64) — M1/M2/M3 Macs
+          - os: macos-14
+            platform: mac-arm64
+            build_cmd: npx electron-builder --mac --arm64 --publish never
+
+          # macOS Intel (x64) — older Macs
+          - os: macos-13
+            platform: mac-x64
+            build_cmd: npx electron-builder --mac --x64 --publish never
+
+          # Linux x64 — produces .deb and .AppImage
+          - os: ubuntu-22.04
+            platform: linux
+            build_cmd: npx electron-builder --linux --x64 --publish never
+
+    runs-on: ${{ matrix.os }}
+    name: Build (${{ matrix.platform }})
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # electron-builder needs these system libs on Linux to build deb / AppImage
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            fakeroot rpm libarchive-tools \
+            libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
+            libatspi2.0-0 libdrm2 libgbm1 libasound2
+
+      # The venv is bundled as extraResources inside the installer.
+      # It must be built on the same OS/arch so Python binaries are native.
+      - name: Create Python venv and install backend dependencies
+        run: |
+          python3 -m venv venv
+          source venv/bin/activate
+          pip install --upgrade pip -q
+          pip install -r requirements.txt -q
+
+      - name: Build React frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      # Root package.json has electron + electron-builder as devDependencies
+      - name: Install Electron / electron-builder
+        run: npm install
+
+      # CSC_IDENTITY_AUTO_DISCOVERY=false skips macOS code-signing.
+      # Users will see "unidentified developer" on first launch and must
+      # right-click → Open. Add Apple Developer certs to repo secrets
+      # (CSC_LINK + CSC_KEY_PASSWORD) to enable proper signing.
+      - name: Build Electron installer
+        run: ${{ matrix.build_cmd }}
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: List output files
+        run: ls -lh dist-electron/
+
+      # Pass installers to the release job via artifacts
+      - name: Upload installer artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.platform }}
+          path: |
+            dist-electron/*.dmg
+            dist-electron/*.deb
+            dist-electron/*.AppImage
+          if-no-files-found: error
+          retention-days: 1   # only needed until the release job picks them up
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # RELEASE  — runs after ALL three builds succeed
+  # Downloads every installer and publishes them in one GitHub Release.
+  # Avoids race conditions that would happen if each build job published
+  # its own release in parallel.
+  # ──────────────────────────────────────────────────────────────────────────
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    name: Publish Release
+
+    steps:
+      - name: Checkout (needed to push the 'latest' git tag)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download macOS arm64 installer
+        uses: actions/download-artifact@v4
+        with:
+          name: installer-mac-arm64
+          path: release-files/
+
+      - name: Download macOS x64 installer
+        uses: actions/download-artifact@v4
+        with:
+          name: installer-mac-x64
+          path: release-files/
+
+      - name: Download Linux installer
+        uses: actions/download-artifact@v4
+        with:
+          name: installer-linux
+          path: release-files/
+
+      - name: List all release files
+        run: ls -lh release-files/
+
+      # Compute tag name, release title, prerelease flag, and release notes
+      - name: Set release metadata
+        id: meta
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "tag=$GITHUB_REF_NAME"                      >> $GITHUB_OUTPUT
+            echo "name=SentinelNMS $GITHUB_REF_NAME"         >> $GITHUB_OUTPUT
+            echo "prerelease=false"                          >> $GITHUB_OUTPUT
+            echo "body=See commit history for full changelog." >> $GITHUB_OUTPUT
+          else
+            SHORT_SHA=$(echo "$GITHUB_SHA" | cut -c1-7)
+            COMMIT_MSG=$(echo "${{ github.event.head_commit.message }}" | head -1)
+            echo "tag=latest"                                >> $GITHUB_OUTPUT
+            echo "name=Latest Build"                         >> $GITHUB_OUTPUT
+            echo "prerelease=true"                           >> $GITHUB_OUTPUT
+            echo "body=Auto-built from \`$SHORT_SHA\` — $COMMIT_MSG" >> $GITHUB_OUTPUT
+          fi
+
+      # For master push: force-move the 'latest' tag to the current commit
+      # so the pre-release always points to the right source.
+      - name: Force-update 'latest' git tag
+        if: github.ref == 'refs/heads/master'
+        run: |
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git tag -fa latest -m "Latest build ($GITHUB_SHA)"
+          git push origin latest --force
+
+      # Delete the old 'latest' release (if any) so we can recreate it with
+      # fresh files. This avoids "asset already exists" errors.
+      - name: Delete existing 'latest' release
+        if: github.ref == 'refs/heads/master'
+        run: gh release delete latest --yes 2>/dev/null || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Create the release. For versioned tags, gh auto-generates release notes.
+      - name: Create GitHub Release
+        run: |
+          PRERELEASE_FLAG=""
+          if [[ "${{ steps.meta.outputs.prerelease }}" == "true" ]]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+
+          NOTES_FLAG=""
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            NOTES_FLAG="--generate-notes"
+          fi
+
+          gh release create "${{ steps.meta.outputs.tag }}" \
+            release-files/* \
+            --title "${{ steps.meta.outputs.name }}" \
+            --notes "${{ steps.meta.outputs.body }}" \
+            $PRERELEASE_FLAG \
+            $NOTES_FLAG
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
