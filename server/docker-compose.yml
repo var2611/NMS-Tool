@@ -1,0 +1,83 @@
+version: '3.9'
+
+services:
+
+  # ─── PostgreSQL Database ──────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: nms-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: nmsdb
+      POSTGRES_USER: nmsuser
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme123}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - nms-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nmsuser -d nmsdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── NMS-Tool Backend ─────────────────────────────────────────────────
+  nms-api:
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    container_name: nms-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_MODE: server
+      API_HOST: 0.0.0.0
+      API_PORT: 8765
+      DATABASE_URL: postgresql+asyncpg://nmsuser:${POSTGRES_PASSWORD:-changeme123}@postgres:5432/nmsdb
+      SECRET_KEY: ${SECRET_KEY:-change-this-to-random-secret-in-production}
+      SNMP_TRAP_PORT: 162
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      WEBHOOK_URL: ${WEBHOOK_URL:-}
+      LOG_LEVEL: INFO
+    volumes:
+      - nms_data:/app/data
+      - nms_mibs:/app/data/mibs
+    ports:
+      - "8765:8765"       # API (nginx will proxy this)
+      - "162:162/udp"     # SNMP traps
+    networks:
+      - nms-network
+    cap_add:
+      - NET_BIND_SERVICE  # allows binding port 162 without root
+
+  # ─── Nginx Reverse Proxy ──────────────────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: nms-nginx
+    restart: unless-stopped
+    depends_on:
+      - nms-api
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro          # Mount your SSL certs here
+      - nms_static:/var/www/static:ro
+    networks:
+      - nms-network
+
+volumes:
+  postgres_data:
+  nms_data:
+  nms_mibs:
+  nms_static:
+
+networks:
+  nms-network:
+    driver: bridge
