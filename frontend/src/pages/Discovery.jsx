@@ -1,11 +1,156 @@
 import { useState, useEffect, useRef } from 'react'
 import { discoveryApi } from '../utils/api'
-import { Radar, Search, Check, Plus, Monitor, Printer, Wifi, Activity } from 'lucide-react'
+import { Radar, Search, Check, Plus, ChevronDown, ChevronUp, Info } from 'lucide-react'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 
 const DEVICE_ICONS = { pc:'💻', laptop:'💻', printer:'🖨️', rf_link:'📡', router:'🔀', switch:'🔀', unknown:'📟' }
 const DEVICE_LABELS = { pc:'PC', laptop:'Laptop', printer:'Printer', rf_link:'RF Link', router:'Router/Switch', unknown:'Unknown' }
+
+const SETUP_GUIDES = [
+  {
+    label: 'Windows PC/Server',
+    icon: '💻',
+    steps: [
+      'Open "Services" (Win+R → services.msc)',
+      'Find "SNMP Service" → right-click → Properties',
+      'Security tab → add community string (e.g. "public") with READ access',
+      'Accept from: add your NMS server IP (or "Any")',
+      'Start the service → set Startup Type: Automatic',
+    ],
+    note: 'If SNMP Service is missing, add it via: Settings → Optional Features → Add a feature → "Simple Network Management Protocol"',
+  },
+  {
+    label: 'Linux (Net-SNMP)',
+    icon: '🐧',
+    steps: [
+      'Install: sudo apt install snmpd  (or yum install net-snmp)',
+      'Edit /etc/snmp/snmpd.conf',
+      'Add:  rocommunity public <NMS-IP>',
+      'Or for any host:  rocommunity public default',
+      'Restart: sudo systemctl restart snmpd',
+      'Allow UDP 161 in firewall: ufw allow 161/udp',
+    ],
+    note: 'Default config in Ubuntu blocks all access — you MUST edit snmpd.conf.',
+  },
+  {
+    label: 'MikroTik Router',
+    icon: '🔀',
+    steps: [
+      'Winbox → IP → SNMP',
+      'Check "Enabled"',
+      'Set community (default: "public"), set "Trap Version: 2"',
+      'Or via terminal:  /snmp set enabled=yes',
+      '/snmp community set 0 name=public',
+    ],
+    note: 'No firewall change needed — MikroTik allows SNMP by default once enabled.',
+  },
+  {
+    label: 'Cisco Router/Switch',
+    icon: '🔌',
+    steps: [
+      'Enter config mode: conf t',
+      'snmp-server community public RO',
+      'snmp-server location "Server Room"',
+      'snmp-server contact admin@company.com',
+      'exit → write memory',
+    ],
+    note: 'Replace "public" with your chosen community string. Use a strong, private string in production.',
+  },
+  {
+    label: 'Ubiquiti / RF Links',
+    icon: '📡',
+    steps: [
+      'Open device web UI → Settings → Services',
+      'Enable SNMP → set community string (e.g. "public")',
+      'For AirMax: System → SNMP → Enable',
+      'No port changes needed — uses default 161',
+    ],
+    note: 'AirFiber and AirMax devices report signal dBm, noise, and CCQ% via SNMP.',
+  },
+  {
+    label: 'Printers (HP / Xerox / Canon)',
+    icon: '🖨️',
+    steps: [
+      'Open printer web interface (http://<printer-ip>)',
+      'Navigate to: Networking → SNMP or Settings → Network → SNMP',
+      'Enable SNMPv1/v2c → set Read community (e.g. "public")',
+      'Save and apply',
+    ],
+    note: 'Most modern network printers have SNMP enabled with "public" by default.',
+  },
+]
+
+function SetupGuide() {
+  const [open, setOpen] = useState(false)
+  const [tab, setTab] = useState(0)
+
+  return (
+    <div className="card overflow-hidden">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between p-4 text-left hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <Info size={16} className="text-teal-500" />
+          <span className="font-medium text-gray-800 dark:text-gray-200 text-sm">
+            How to enable SNMP on your devices (required for scan &amp; monitoring)
+          </span>
+        </div>
+        {open ? <ChevronUp size={16} className="text-gray-400" /> : <ChevronDown size={16} className="text-gray-400" />}
+      </button>
+
+      {open && (
+        <div className="border-t border-gray-100 dark:border-gray-700">
+          {/* Port info banner */}
+          <div className="bg-teal-50 dark:bg-teal-900/20 px-4 py-3 flex flex-wrap gap-4 text-xs text-teal-800 dark:text-teal-300 border-b border-teal-100 dark:border-teal-800">
+            <span><strong>SNMP Port:</strong> UDP 161 (standard, what this tool uses)</span>
+            <span><strong>Trap Port:</strong> UDP 162 (for device alerts to NMS)</span>
+            <span><strong>Protocol:</strong> SNMPv2c (recommended) or v1/v3</span>
+            <span><strong>Community string:</strong> acts as a password — "public" is the default read-only string</span>
+          </div>
+
+          {/* Device tabs */}
+          <div className="flex gap-1 p-3 flex-wrap border-b border-gray-100 dark:border-gray-700">
+            {SETUP_GUIDES.map((g, i) => (
+              <button
+                key={i}
+                onClick={() => setTab(i)}
+                className={clsx(
+                  'text-xs px-3 py-1.5 rounded-full border transition-colors',
+                  tab === i
+                    ? 'bg-teal-600 text-white border-teal-600'
+                    : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:border-teal-400'
+                )}
+              >
+                {g.icon} {g.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Steps */}
+          <div className="p-4">
+            <ol className="space-y-2">
+              {SETUP_GUIDES[tab].steps.map((step, i) => (
+                <li key={i} className="flex gap-3 text-sm">
+                  <span className="w-5 h-5 rounded-full bg-teal-100 dark:bg-teal-900 text-teal-700 dark:text-teal-300 text-xs flex items-center justify-center flex-shrink-0 mt-0.5 font-bold">
+                    {i + 1}
+                  </span>
+                  <span className="text-gray-700 dark:text-gray-300 font-mono text-xs leading-relaxed">{step}</span>
+                </li>
+              ))}
+            </ol>
+            {SETUP_GUIDES[tab].note && (
+              <div className="mt-3 bg-amber-50 dark:bg-amber-900/20 rounded p-3 text-xs text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800">
+                <strong>Note:</strong> {SETUP_GUIDES[tab].note}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
 
 export default function Discovery() {
   const [subnet, setSubnet] = useState('192.168.1.0/24')
@@ -28,7 +173,6 @@ export default function Discovery() {
         max_concurrent: 30,
       })
       const scanId = res.data.scan_id
-      // Poll for progress
       pollRef.current = setInterval(async () => {
         const status = await discoveryApi.getScan(scanId)
         setScan({ ...status.data, scan_id: scanId })
@@ -89,8 +233,12 @@ export default function Discovery() {
         <p className="text-gray-500 text-sm mt-1">Scan your network to automatically find all SNMP-enabled devices</p>
       </div>
 
+      {/* Client Setup Guide */}
+      <SetupGuide />
+
       {/* Scan Config */}
       <div className="card p-6">
+        <h2 className="font-semibold text-gray-800 dark:text-gray-200 mb-4">Network Scan</h2>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
           <div className="md:col-span-2">
             <label className="label">
@@ -109,6 +257,7 @@ export default function Discovery() {
             <input type="text" className="input" value={communities}
               onChange={e => setCommunities(e.target.value)}
               placeholder="public,private" />
+            <p className="text-xs text-gray-400 mt-1">Tried in order until one responds</p>
           </div>
         </div>
 
@@ -214,13 +363,28 @@ export default function Discovery() {
       )}
 
       {scan?.status === 'completed' && scan.found?.length === 0 && (
-        <div className="card p-12 text-center">
-          <Search size={40} className="mx-auto text-gray-300 mb-3" />
-          <p className="text-gray-500 font-medium">No SNMP devices found in {subnet}</p>
-          <p className="text-sm text-gray-400 mt-1">
-            Make sure devices have SNMP enabled and the community string is correct.
-            Most devices use "public" by default.
-          </p>
+        <div className="card p-8">
+          <div className="text-center mb-6">
+            <Search size={40} className="mx-auto text-gray-300 mb-3" />
+            <p className="text-gray-700 dark:text-gray-300 font-semibold">No SNMP devices found in {subnet}</p>
+            <p className="text-sm text-gray-400 mt-1 max-w-md mx-auto">
+              The scan completed but no devices responded to SNMP. This usually means SNMP is not yet enabled on those devices.
+            </p>
+          </div>
+          <div className="border-t border-gray-100 dark:border-gray-700 pt-5 grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm">
+            <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-3">
+              <p className="font-medium text-gray-700 dark:text-gray-300 mb-1">1. Enable SNMP</p>
+              <p className="text-gray-500 text-xs">Use the "How to enable SNMP" guide above to configure each device.</p>
+            </div>
+            <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-3">
+              <p className="font-medium text-gray-700 dark:text-gray-300 mb-1">2. Check community string</p>
+              <p className="text-gray-500 text-xs">Most devices default to "public". Enter the exact string set on the device.</p>
+            </div>
+            <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-3">
+              <p className="font-medium text-gray-700 dark:text-gray-300 mb-1">3. Check firewall/subnet</p>
+              <p className="text-gray-500 text-xs">UDP port 161 must be open. Make sure you're scanning the right subnet.</p>
+            </div>
+          </div>
         </div>
       )}
     </div>
