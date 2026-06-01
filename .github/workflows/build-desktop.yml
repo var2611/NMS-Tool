@@ -14,36 +14,41 @@ on:
 permissions:
   contents: write   # required to create/update releases and push the 'latest' tag
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # suppress Node 20 deprecation warnings
+
 jobs:
   # ──────────────────────────────────────────────────────────────────────────
-  # BUILD  — three parallel jobs, one per platform / arch
+  # BUILD  — two parallel jobs, both on macos-14 (arm64 runner)
+  #
+  # Why both on macos-14 instead of macos-13 for x64?
+  #   macos-13 (Intel) runners have very long queue times on GitHub Actions.
+  #   macos-14 is fast and can build x64 via Rosetta 2: we simply create the
+  #   Python venv under `arch -x86_64` so the bundled binaries are x86_64.
+  #   electron-builder handles cross-downloading the correct Electron binary.
+  #
   # Each job:
-  #   1. Creates a Python venv (native to that runner, so binaries match arch)
+  #   1. Creates a Python venv matching the target arch (arm64 or x86_64)
   #   2. Builds the React frontend
-  #   3. Runs electron-builder to produce the installer
-  #   4. Uploads the installer as a workflow artifact for the release job
+  #   3. Runs electron-builder to produce a .dmg for that arch
+  #   4. Uploads the .dmg as a workflow artifact for the release job
   # ──────────────────────────────────────────────────────────────────────────
   build:
     strategy:
-      fail-fast: false   # don't cancel sibling jobs if one fails
+      fail-fast: false   # don't cancel the sibling job if one fails
       matrix:
         include:
-          # macOS Apple Silicon (arm64) — M1/M2/M3 Macs
-          - os: macos-14
-            platform: mac-arm64
+          # Apple Silicon — M1 / M2 / M3 Macs
+          - platform: mac-arm64
+            python_arch: arm64
             build_cmd: npx electron-builder --mac --arm64 --publish never
 
-          # macOS Intel (x64) — older Macs
-          - os: macos-13
-            platform: mac-x64
+          # Intel — older Macs (venv built via Rosetta on the arm64 runner)
+          - platform: mac-x64
+            python_arch: x86_64
             build_cmd: npx electron-builder --mac --x64 --publish never
 
-          # Linux x64 — produces .deb and .AppImage
-          - os: ubuntu-22.04
-            platform: linux
-            build_cmd: npx electron-builder --linux --x64 --publish never
-
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-14     # single fast runner for both arches
     name: Build (${{ matrix.platform }})
 
     steps:
@@ -55,26 +60,24 @@ jobs:
         with:
           node-version: '18'
 
-      - name: Set up Python 3.11
+      # setup-python on macos-14 installs a universal2 Python,
+      # so both `python3` (arm64) and `arch -x86_64 python3` (x64) work.
+      - name: Set up Python 3.11 (universal2)
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      # electron-builder needs these system libs on Linux to build deb / AppImage
-      - name: Install Linux build dependencies
-        if: runner.os == 'Linux'
+      # For arm64: plain python3 → native arm64 venv
+      # For x64:   arch -x86_64 python3 → x86_64 venv via Rosetta
+      # The venv is bundled inside the .dmg via extraResources, so the
+      # Python binaries inside it must match the target architecture.
+      - name: Create Python venv (${{ matrix.python_arch }})
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            fakeroot rpm libarchive-tools \
-            libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
-            libatspi2.0-0 libdrm2 libgbm1 libasound2
-
-      # The venv is bundled as extraResources inside the installer.
-      # It must be built on the same OS/arch so Python binaries are native.
-      - name: Create Python venv and install backend dependencies
-        run: |
-          python3 -m venv venv
+          if [[ "${{ matrix.python_arch }}" == "x86_64" ]]; then
+            arch -x86_64 $(which python3) -m venv venv
+          else
+            python3 -m venv venv
+          fi
           source venv/bin/activate
           pip install --upgrade pip -q
           pip install -r requirements.txt -q
@@ -85,14 +88,13 @@ jobs:
           npm ci
           npm run build
 
-      # Root package.json has electron + electron-builder as devDependencies
       - name: Install Electron / electron-builder
         run: npm install
 
-      # CSC_IDENTITY_AUTO_DISCOVERY=false skips macOS code-signing.
-      # Users will see "unidentified developer" on first launch and must
-      # right-click → Open. Add Apple Developer certs to repo secrets
-      # (CSC_LINK + CSC_KEY_PASSWORD) to enable proper signing.
+      # CSC_IDENTITY_AUTO_DISCOVERY=false skips macOS code-signing in CI.
+      # Users will see "unidentified developer" on first launch — right-click
+      # → Open to bypass. Add CSC_LINK + CSC_KEY_PASSWORD repo secrets to
+      # enable proper Apple Developer signing.
       - name: Build Electron installer
         run: ${{ matrix.build_cmd }}
         env:
@@ -101,23 +103,19 @@ jobs:
       - name: List output files
         run: ls -lh dist-electron/
 
-      # Pass installers to the release job via artifacts
-      - name: Upload installer artifacts
+      # Pass the .dmg to the release job
+      - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
           name: installer-${{ matrix.platform }}
-          path: |
-            dist-electron/*.dmg
-            dist-electron/*.deb
-            dist-electron/*.AppImage
+          path: dist-electron/*.dmg
           if-no-files-found: error
-          retention-days: 1   # only needed until the release job picks them up
+          retention-days: 1   # only needed until the release job picks it up
 
   # ──────────────────────────────────────────────────────────────────────────
-  # RELEASE  — runs after ALL three builds succeed
-  # Downloads every installer and publishes them in one GitHub Release.
-  # Avoids race conditions that would happen if each build job published
-  # its own release in parallel.
+  # RELEASE  — runs after BOTH builds succeed
+  # Downloads both .dmg files and publishes them in one GitHub Release.
+  # A single release job avoids race conditions from parallel uploads.
   # ──────────────────────────────────────────────────────────────────────────
   release:
     needs: build
@@ -142,35 +140,28 @@ jobs:
           name: installer-mac-x64
           path: release-files/
 
-      - name: Download Linux installer
-        uses: actions/download-artifact@v4
-        with:
-          name: installer-linux
-          path: release-files/
-
       - name: List all release files
         run: ls -lh release-files/
 
-      # Compute tag name, release title, prerelease flag, and release notes
+      # Compute tag name, title, prerelease flag, and body for the release
       - name: Set release metadata
         id: meta
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            echo "tag=$GITHUB_REF_NAME"                      >> $GITHUB_OUTPUT
-            echo "name=SentinelNMS $GITHUB_REF_NAME"         >> $GITHUB_OUTPUT
-            echo "prerelease=false"                          >> $GITHUB_OUTPUT
-            echo "body=See commit history for full changelog." >> $GITHUB_OUTPUT
+            echo "tag=$GITHUB_REF_NAME"                         >> $GITHUB_OUTPUT
+            echo "name=SentinelNMS $GITHUB_REF_NAME"            >> $GITHUB_OUTPUT
+            echo "prerelease=false"                             >> $GITHUB_OUTPUT
+            echo "body=See commit history for full changelog."  >> $GITHUB_OUTPUT
           else
             SHORT_SHA=$(echo "$GITHUB_SHA" | cut -c1-7)
             COMMIT_MSG=$(echo "${{ github.event.head_commit.message }}" | head -1)
-            echo "tag=latest"                                >> $GITHUB_OUTPUT
-            echo "name=Latest Build"                         >> $GITHUB_OUTPUT
-            echo "prerelease=true"                           >> $GITHUB_OUTPUT
-            echo "body=Auto-built from \`$SHORT_SHA\` — $COMMIT_MSG" >> $GITHUB_OUTPUT
+            echo "tag=latest"                                                    >> $GITHUB_OUTPUT
+            echo "name=Latest Build"                                             >> $GITHUB_OUTPUT
+            echo "prerelease=true"                                               >> $GITHUB_OUTPUT
+            echo "body=Auto-built from \`$SHORT_SHA\` — $COMMIT_MSG"            >> $GITHUB_OUTPUT
           fi
 
       # For master push: force-move the 'latest' tag to the current commit
-      # so the pre-release always points to the right source.
       - name: Force-update 'latest' git tag
         if: github.ref == 'refs/heads/master'
         run: |
@@ -179,26 +170,20 @@ jobs:
           git tag -fa latest -m "Latest build ($GITHUB_SHA)"
           git push origin latest --force
 
-      # Delete the old 'latest' release (if any) so we can recreate it with
-      # fresh files. This avoids "asset already exists" errors.
+      # Delete the stale 'latest' release before recreating it with fresh files
       - name: Delete existing 'latest' release
         if: github.ref == 'refs/heads/master'
         run: gh release delete latest --yes 2>/dev/null || true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Create the release. For versioned tags, gh auto-generates release notes.
       - name: Create GitHub Release
         run: |
           PRERELEASE_FLAG=""
-          if [[ "${{ steps.meta.outputs.prerelease }}" == "true" ]]; then
-            PRERELEASE_FLAG="--prerelease"
-          fi
+          [[ "${{ steps.meta.outputs.prerelease }}" == "true" ]] && PRERELEASE_FLAG="--prerelease"
 
           NOTES_FLAG=""
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            NOTES_FLAG="--generate-notes"
-          fi
+          [[ "$GITHUB_REF" == refs/tags/v* ]] && NOTES_FLAG="--generate-notes"
 
           gh release create "${{ steps.meta.outputs.tag }}" \
             release-files/* \
