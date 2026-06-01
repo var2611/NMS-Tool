@@ -3,7 +3,10 @@
   "version": "1.0.0",
   "description": "SentinelNMS — Network Management System by Nav Wireless Technologies",
   "main": "desktop/main.js",
-  "author": "NMS-Tool",
+  "author": {
+    "name": "Vardhan Suthar",
+    "email": "var2611@gmail.com"
+  },
   "license": "MIT",
   "scripts": {
     "start": "electron .",
