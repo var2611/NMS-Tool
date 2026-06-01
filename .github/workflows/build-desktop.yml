@@ -19,36 +19,47 @@ env:
 
 jobs:
   # ──────────────────────────────────────────────────────────────────────────
-  # BUILD  — two parallel jobs, both on macos-14 (arm64 runner)
+  # BUILD  — three parallel jobs
   #
-  # Why both on macos-14 instead of macos-13 for x64?
-  #   macos-13 (Intel) runners have very long queue times on GitHub Actions.
-  #   macos-14 is fast and can build x64 via Rosetta 2: we simply create the
-  #   Python venv under `arch -x86_64` so the bundled binaries are x86_64.
-  #   electron-builder handles cross-downloading the correct Electron binary.
+  # mac-arm64 + mac-x64: both run on macos-14 (fast arm64 runner).
+  #   x64 venv is built via `arch -x86_64 python3` (Rosetta) so the bundled
+  #   Python binaries are x86_64-native for Intel Mac users.
+  #
+  # windows: runs on windows-latest, produces an NSIS .exe installer.
   #
   # Each job:
-  #   1. Creates a Python venv matching the target arch (arm64 or x86_64)
+  #   1. Creates a Python venv matching the target arch
   #   2. Builds the React frontend
-  #   3. Runs electron-builder to produce a .dmg for that arch
-  #   4. Uploads the .dmg as a workflow artifact for the release job
+  #   3. Runs electron-builder to produce the installer
+  #   4. Uploads the installer as a workflow artifact for the release job
   # ──────────────────────────────────────────────────────────────────────────
   build:
     strategy:
-      fail-fast: false   # don't cancel the sibling job if one fails
+      fail-fast: false   # don't cancel sibling jobs if one fails
       matrix:
         include:
           # Apple Silicon — M1 / M2 / M3 Macs
           - platform: mac-arm64
+            os: macos-14
             python_arch: arm64
             build_cmd: npx electron-builder --mac --arm64 --publish never
+            artifact_glob: dist-electron/*.dmg
 
           # Intel — older Macs (venv built via Rosetta on the arm64 runner)
           - platform: mac-x64
+            os: macos-14
             python_arch: x86_64
             build_cmd: npx electron-builder --mac --x64 --publish never
+            artifact_glob: dist-electron/*.dmg
 
-    runs-on: macos-14     # single fast runner for both arches
+          # Windows x64 — NSIS installer (.exe)
+          - platform: windows
+            os: windows-latest
+            python_arch: x86_64
+            build_cmd: npx electron-builder --win --x64 --publish never
+            artifact_glob: dist-electron/*.exe
+
+    runs-on: ${{ matrix.os }}
     name: Build (${{ matrix.platform }})
 
     steps:
@@ -67,18 +78,27 @@ jobs:
         with:
           python-version: '3.11'
 
-      # For arm64: plain python3 → native arm64 venv
-      # For x64:   arch -x86_64 python3 → x86_64 venv via Rosetta
-      # The venv is bundled inside the .dmg via extraResources, so the
-      # Python binaries inside it must match the target architecture.
+      # macOS arm64 : plain python3          → native arm64 venv
+      # macOS x64   : arch -x86_64 python3  → x86_64 venv via Rosetta
+      # Windows     : python -m venv        → x64 venv (native on windows-latest)
+      # The venv is bundled inside the installer via extraResources, so the
+      # Python binaries must match the target architecture.
       - name: Create Python venv (${{ matrix.python_arch }})
+        shell: bash
         run: |
-          if [[ "${{ matrix.python_arch }}" == "x86_64" ]]; then
+          if [[ "${{ matrix.platform }}" == "mac-x64" ]]; then
             arch -x86_64 $(which python3) -m venv venv
           else
             python3 -m venv venv
           fi
-          source venv/bin/activate
+
+          # Activate: Windows uses Scripts/, macOS/Linux uses bin/
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            source venv/Scripts/activate
+          else
+            source venv/bin/activate
+          fi
+
           pip install --upgrade pip -q
           pip install -r requirements.txt -q
 
@@ -103,18 +123,18 @@ jobs:
       - name: List output files
         run: ls -lh dist-electron/
 
-      # Pass the .dmg to the release job
+      # Pass the installer to the release job
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
           name: installer-${{ matrix.platform }}
-          path: dist-electron/*.dmg
+          path: ${{ matrix.artifact_glob }}
           if-no-files-found: error
           retention-days: 1   # only needed until the release job picks it up
 
   # ──────────────────────────────────────────────────────────────────────────
-  # RELEASE  — runs after BOTH builds succeed
-  # Downloads both .dmg files and publishes them in one GitHub Release.
+  # RELEASE  — runs after ALL THREE builds succeed
+  # Downloads all installers and publishes them in one GitHub Release.
   # A single release job avoids race conditions from parallel uploads.
   # ──────────────────────────────────────────────────────────────────────────
   release:
@@ -138,6 +158,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: installer-mac-x64
+          path: release-files/
+
+      - name: Download Windows installer
+        uses: actions/download-artifact@v4
+        with:
+          name: installer-windows
           path: release-files/
 
       - name: List all release files
