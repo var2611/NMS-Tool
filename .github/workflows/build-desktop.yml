@@ -26,10 +26,12 @@ jobs:
   # windows   : windows-latest → NSIS .exe for Windows x64
   #
   # Each job:
-  #   1. Creates a native Python venv (binaries match the target OS/arch)
-  #   2. Builds the React frontend
-  #   3. Runs electron-builder to produce the installer
-  #   4. Uploads the installer as a workflow artifact for the release job
+  #   1. Installs Python deps + PyInstaller
+  #   2. Runs PyInstaller to build nms-backend (standalone binary, no
+  #      external Python framework deps — fixes macOS dyld crash)
+  #   3. Builds the React frontend
+  #   4. Runs electron-builder to produce the installer
+  #   5. Uploads the installer as a workflow artifact for the release job
   # ──────────────────────────────────────────────────────────────────────────
   build:
     strategy:
@@ -81,28 +83,52 @@ jobs:
             libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
             libatspi2.0-0 libdrm2 libgbm1 libasound2
 
-      # --copies is critical for macOS/Linux: without it, venv/bin/python is a
-      # symlink to the CI runner's system Python (e.g. /usr/bin/python3.11).
-      # electron-builder copies the symlink but NOT what it points to, so the
-      # bundled app crashes with ENOENT on the user's machine.
-      # --copies replaces symlinks with real binary copies, making the venv
-      # fully self-contained and relocatable inside the .app / .deb / .AppImage.
-      # Windows already uses real .exe files so --copies is safe there too.
-      - name: Create Python venv (--copies for relocatable binaries)
+      # PyInstaller bundles Python + all deps into a standalone binary with
+      # NO external framework dependencies. This solves the macOS
+      # "dyld: Library not loaded: /Library/Frameworks/Python.framework"
+      # crash that happens with venv — even with --copies, the Python binary
+      # links against an absolute framework path that only exists on the CI
+      # runner, not on the user's machine.
+      - name: Install Python deps + PyInstaller
         shell: bash
         run: |
-          python3 -m venv --copies venv
+          python3 -m pip install --upgrade pip -q
+          python3 -m pip install -r requirements.txt pyinstaller -q
 
-          # Call the venv Python directly — no shell activation needed,
-          # and avoids the Windows "pip can't replace itself" error.
-          if [[ "${{ runner.os }}" == "Windows" ]]; then
-            VENV_PY="./venv/Scripts/python.exe"
-          else
-            VENV_PY="./venv/bin/python"
-          fi
+      - name: Build standalone backend binary (PyInstaller)
+        shell: bash
+        run: |
+          # --add-data separator: ':' on Unix, ';' on Windows
+          if [[ "${{ runner.os }}" == "Windows" ]]; then SEP=";"; else SEP=":"; fi
 
-          "$VENV_PY" -m pip install --upgrade pip -q
-          "$VENV_PY" -m pip install -r requirements.txt -q
+          python3 -m PyInstaller \
+            --onedir \
+            --name nms-backend \
+            --distpath dist-backend \
+            --workpath build-pyinstaller \
+            --noconfirm \
+            --add-data "api${SEP}api" \
+            --add-data "core${SEP}core" \
+            --add-data "frontend/dist${SEP}frontend/dist" \
+            --hidden-import "uvicorn.logging" \
+            --hidden-import "uvicorn.loops.auto" \
+            --hidden-import "uvicorn.protocols.http.auto" \
+            --hidden-import "uvicorn.protocols.http.h11_impl" \
+            --hidden-import "uvicorn.protocols.websockets.auto" \
+            --hidden-import "uvicorn.protocols.websockets.websockets_impl" \
+            --hidden-import "uvicorn.lifespan.on" \
+            --hidden-import "uvicorn.lifespan.off" \
+            --hidden-import "sqlalchemy.sql.default_comparator" \
+            --hidden-import "sqlalchemy.dialects.sqlite" \
+            --hidden-import "sqlalchemy.dialects.sqlite.aiosqlite" \
+            --hidden-import "aiosqlite" \
+            --collect-all "pysnmp" \
+            --collect-all "pyasn1" \
+            --collect-all "fastapi" \
+            --collect-all "starlette" \
+            backend_entry.py 2>&1 | tail -15
+
+          echo "=== PyInstaller output ===" && ls -lh dist-backend/nms-backend/ | head -8
 
       - name: Build React frontend
         working-directory: frontend

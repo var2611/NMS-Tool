@@ -24,12 +24,19 @@ function getResourcePath(...parts) {
   return path.join(__dirname, '..', ...parts)
 }
 
-function getPythonPath() {
+/**
+ * Returns the backend executable path.
+ *
+ * Packaged:    Resources/nms-backend/nms-backend(.exe)  ← PyInstaller binary
+ * Development: venv/bin/python (or venv/Scripts/python.exe on Windows)
+ *              falls back to system python3 if no venv found
+ */
+function getBackendExe() {
   if (app.isPackaged) {
-    if (process.platform === 'win32') return path.join(process.resourcesPath, 'venv', 'Scripts', 'python.exe')
-    return path.join(process.resourcesPath, 'venv', 'bin', 'python')
+    const name = process.platform === 'win32' ? 'nms-backend.exe' : 'nms-backend'
+    return path.join(process.resourcesPath, 'nms-backend', name)
   }
-  // Development: try venv first, then system python
+  // Dev mode: use local venv
   const venvPaths = [
     path.join(__dirname, '..', 'venv', 'bin', 'python'),
     path.join(__dirname, '..', 'venv', 'Scripts', 'python.exe'),
@@ -43,14 +50,16 @@ function getPythonPath() {
 // ─── Backend ──────────────────────────────────────────────────────────────────
 
 function startBackend() {
-  const python = getPythonPath()
-  const mainScript = getResourcePath('api', 'main.py')
-  const workDir = getResourcePath()
-  const envFile = path.join(workDir, '.env')
+  const exe = getBackendExe()
+  const userData = app.getPath('userData')
 
-  // Create .env if it doesn't exist
+  // Ensure writable data directories exist in userData
+  fs.mkdirSync(path.join(userData, 'data', 'mibs'), { recursive: true })
+
+  // .env lives in userData so the user can edit it
+  const envFile = path.join(userData, '.env')
   if (!fs.existsSync(envFile)) {
-    const envExample = path.join(workDir, '.env.example')
+    const envExample = getResourcePath('.env.example')
     if (fs.existsSync(envExample)) {
       fs.copyFileSync(envExample, envFile)
     }
@@ -61,19 +70,36 @@ function startBackend() {
     APP_MODE: 'desktop',
     API_HOST: '127.0.0.1',
     API_PORT: String(API_PORT),
-    SQLITE_DB_PATH: path.join(app.getPath('userData'), 'nms.db'),
-    LOG_FILE: path.join(app.getPath('userData'), 'nms.log'),
+    SQLITE_DB_PATH: path.join(userData, 'nms.db'),
+    LOG_FILE: path.join(userData, 'nms.log'),
   }
 
-  console.log(`Starting backend: ${python} -m uvicorn api.main:app --host 127.0.0.1 --port ${API_PORT}`)
+  let spawnArgs, cwd
 
-  backendProcess = spawn(python, [
-    '-m', 'uvicorn', 'api.main:app',
-    '--host', '127.0.0.1',
-    '--port', String(API_PORT),
-    '--log-level', 'warning',
-  ], {
-    cwd: workDir,
+  if (app.isPackaged) {
+    // PyInstaller binary — call with args directly, no "python -m uvicorn"
+    spawnArgs = [
+      '--host', '127.0.0.1',
+      '--port', String(API_PORT),
+      '--log-level', 'warning',
+    ]
+    // cwd = userData so relative paths (./data/mibs, .env) resolve correctly
+    cwd = userData
+  } else {
+    // Dev mode — python -m uvicorn via local venv
+    spawnArgs = [
+      '-m', 'uvicorn', 'api.main:app',
+      '--host', '127.0.0.1',
+      '--port', String(API_PORT),
+      '--log-level', 'warning',
+    ]
+    cwd = path.join(__dirname, '..')
+  }
+
+  console.log(`Starting backend: ${exe} ${spawnArgs.join(' ')}`)
+
+  backendProcess = spawn(exe, spawnArgs, {
+    cwd,
     env,
     windowsHide: true,
   })

@@ -29,9 +29,7 @@
     },
     "files": [
       "desktop/**/*",
-      "api/**/*",
-      "core/**/*",
-      "frontend/dist/**/*",
+      "backend_entry.py",
       "requirements.txt",
       ".env.example",
       "!**/__pycache__",
@@ -40,23 +38,16 @@
     ],
     "extraResources": [
       {
-        "from": "venv",
-        "to": "venv",
-        "filter": [
-          "**/*"
-        ]
-      },
-      {
-        "from": "api",
-        "to": "api"
-      },
-      {
-        "from": "core",
-        "to": "core"
+        "from": "dist-backend/nms-backend",
+        "to": "nms-backend"
       },
       {
         "from": "frontend/dist",
         "to": "frontend/dist"
+      },
+      {
+        "from": ".env.example",
+        "to": ".env.example"
       }
     ],
     "win": {
