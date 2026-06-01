@@ -1,7 +1,7 @@
 {
   "name": "sentinelnms-desktop",
-  "version": "1.0.0",
-  "description": "SentinelNMS — Network Management System by Nav Wireless Technologies",
+  "version": "1.0.1",
+  "description": "SentinelNMS \u2014 Network Management System by Nav Wireless Technologies",
   "main": "desktop/main.js",
   "author": {
     "name": "Vardhan Suthar",
@@ -39,22 +39,65 @@
       "!node_modules"
     ],
     "extraResources": [
-      { "from": "venv", "to": "venv", "filter": ["**/*"] },
-      { "from": "api", "to": "api" },
-      { "from": "core", "to": "core" },
-      { "from": "frontend/dist", "to": "frontend/dist" }
+      {
+        "from": "venv",
+        "to": "venv",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "api",
+        "to": "api"
+      },
+      {
+        "from": "core",
+        "to": "core"
+      },
+      {
+        "from": "frontend/dist",
+        "to": "frontend/dist"
+      }
     ],
     "win": {
-      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
       "icon": "desktop/icon.ico"
     },
     "linux": {
-      "target": [{ "target": "deb", "arch": ["x64"] }, { "target": "AppImage", "arch": ["x64"] }],
+      "target": [
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
       "icon": "desktop/icon.png",
       "category": "Network"
     },
     "mac": {
-      "target": [{ "target": "dmg", "arch": ["x64", "arm64"] }],
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
       "icon": "desktop/icon.icns"
     },
     "nsis": {
