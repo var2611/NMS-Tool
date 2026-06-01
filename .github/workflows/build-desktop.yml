@@ -21,14 +21,12 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────────
   # BUILD  — three parallel jobs
   #
-  # mac-arm64 + mac-x64: both run on macos-14 (fast arm64 runner).
-  #   x64 venv is built via `arch -x86_64 python3` (Rosetta) so the bundled
-  #   Python binaries are x86_64-native for Intel Mac users.
-  #
-  # windows: runs on windows-latest, produces an NSIS .exe installer.
+  # mac-arm64 : macos-14 runner → .dmg for Apple Silicon (M1/M2/M3)
+  # linux     : ubuntu-22.04   → .deb + .AppImage for Linux x64
+  # windows   : windows-latest → NSIS .exe for Windows x64
   #
   # Each job:
-  #   1. Creates a Python venv matching the target arch
+  #   1. Creates a native Python venv (binaries match the target OS/arch)
   #   2. Builds the React frontend
   #   3. Runs electron-builder to produce the installer
   #   4. Uploads the installer as a workflow artifact for the release job
@@ -38,24 +36,21 @@ jobs:
       fail-fast: false   # don't cancel sibling jobs if one fails
       matrix:
         include:
-          # Apple Silicon — M1 / M2 / M3 Macs
+          # macOS Apple Silicon — M1 / M2 / M3 Macs
           - platform: mac-arm64
             os: macos-14
-            python_arch: arm64
             build_cmd: npx electron-builder --mac --arm64 --publish never
             artifact_glob: dist-electron/*.dmg
 
-          # Intel — older Macs (venv built via Rosetta on the arm64 runner)
-          - platform: mac-x64
-            os: macos-14
-            python_arch: x86_64
-            build_cmd: npx electron-builder --mac --x64 --publish never
-            artifact_glob: dist-electron/*.dmg
+          # Linux x64 — .deb (Debian/Ubuntu) + .AppImage (universal)
+          - platform: linux
+            os: ubuntu-22.04
+            build_cmd: npx electron-builder --linux --x64 --publish never
+            artifact_glob: "dist-electron/*.deb\n            dist-electron/*.AppImage"
 
           # Windows x64 — NSIS installer (.exe)
           - platform: windows
             os: windows-latest
-            python_arch: x86_64
             build_cmd: npx electron-builder --win --x64 --publish never
             artifact_glob: dist-electron/*.exe
 
@@ -71,28 +66,28 @@ jobs:
         with:
           node-version: '18'
 
-      # setup-python on macos-14 installs a universal2 Python,
-      # so both `python3` (arm64) and `arch -x86_64 python3` (x64) work.
-      - name: Set up Python 3.11 (universal2)
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      # macOS arm64 : plain python3          → native arm64 venv
-      # macOS x64   : arch -x86_64 python3  → x86_64 venv via Rosetta
-      # Windows     : python -m venv        → x64 venv (native on windows-latest)
-      # The venv is bundled inside the installer via extraResources, so the
-      # Python binaries must match the target architecture.
-      - name: Create Python venv (${{ matrix.python_arch }})
+      # electron-builder needs these system libraries to produce deb / AppImage
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            fakeroot rpm libarchive-tools \
+            libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
+            libatspi2.0-0 libdrm2 libgbm1 libasound2
+
+      # Create a native venv so the bundled Python binaries match the OS/arch.
+      # Windows uses Scripts\activate; macOS/Linux use bin/activate.
+      - name: Create Python venv
         shell: bash
         run: |
-          if [[ "${{ matrix.platform }}" == "mac-x64" ]]; then
-            arch -x86_64 $(which python3) -m venv venv
-          else
-            python3 -m venv venv
-          fi
+          python3 -m venv venv
 
-          # Activate: Windows uses Scripts/, macOS/Linux uses bin/
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             source venv/Scripts/activate
           else
@@ -112,29 +107,41 @@ jobs:
         run: npm install
 
       # CSC_IDENTITY_AUTO_DISCOVERY=false skips macOS code-signing in CI.
-      # Users will see "unidentified developer" on first launch — right-click
-      # → Open to bypass. Add CSC_LINK + CSC_KEY_PASSWORD repo secrets to
-      # enable proper Apple Developer signing.
+      # Users see "unidentified developer" on first launch — right-click → Open.
+      # Add CSC_LINK + CSC_KEY_PASSWORD repo secrets to enable proper signing.
       - name: Build Electron installer
         run: ${{ matrix.build_cmd }}
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
       - name: List output files
+        shell: bash
         run: ls -lh dist-electron/
 
-      # Pass the installer to the release job
-      - name: Upload installer artifact
+      # Upload installers for the release job to collect
+      - name: Upload installer artifact (mac / windows)
+        if: matrix.platform != 'linux'
         uses: actions/upload-artifact@v4
         with:
           name: installer-${{ matrix.platform }}
           path: ${{ matrix.artifact_glob }}
           if-no-files-found: error
-          retention-days: 1   # only needed until the release job picks it up
+          retention-days: 1
+
+      - name: Upload installer artifact (linux)
+        if: matrix.platform == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-linux
+          path: |
+            dist-electron/*.deb
+            dist-electron/*.AppImage
+          if-no-files-found: error
+          retention-days: 1
 
   # ──────────────────────────────────────────────────────────────────────────
   # RELEASE  — runs after ALL THREE builds succeed
-  # Downloads all installers and publishes them in one GitHub Release.
+  # Downloads every installer and publishes them in one GitHub Release.
   # A single release job avoids race conditions from parallel uploads.
   # ──────────────────────────────────────────────────────────────────────────
   release:
@@ -154,10 +161,10 @@ jobs:
           name: installer-mac-arm64
           path: release-files/
 
-      - name: Download macOS x64 installer
+      - name: Download Linux installers
         uses: actions/download-artifact@v4
         with:
-          name: installer-mac-x64
+          name: installer-linux
           path: release-files/
 
       - name: Download Windows installer
@@ -169,7 +176,7 @@ jobs:
       - name: List all release files
         run: ls -lh release-files/
 
-      # Compute tag name, title, prerelease flag, and body for the release
+      # Compute tag name, title, prerelease flag, and release body
       - name: Set release metadata
         id: meta
         run: |
@@ -181,10 +188,10 @@ jobs:
           else
             SHORT_SHA=$(echo "$GITHUB_SHA" | cut -c1-7)
             COMMIT_MSG=$(echo "${{ github.event.head_commit.message }}" | head -1)
-            echo "tag=latest"                                                    >> $GITHUB_OUTPUT
-            echo "name=Latest Build"                                             >> $GITHUB_OUTPUT
-            echo "prerelease=true"                                               >> $GITHUB_OUTPUT
-            echo "body=Auto-built from \`$SHORT_SHA\` — $COMMIT_MSG"            >> $GITHUB_OUTPUT
+            echo "tag=latest"                                             >> $GITHUB_OUTPUT
+            echo "name=Latest Build"                                      >> $GITHUB_OUTPUT
+            echo "prerelease=true"                                        >> $GITHUB_OUTPUT
+            echo "body=Auto-built from \`$SHORT_SHA\` — $COMMIT_MSG"     >> $GITHUB_OUTPUT
           fi
 
       # For master push: force-move the 'latest' tag to the current commit
