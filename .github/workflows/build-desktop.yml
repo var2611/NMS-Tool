@@ -81,16 +81,20 @@ jobs:
             libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
             libatspi2.0-0 libdrm2 libgbm1 libasound2
 
-      # Create a native venv so the bundled Python binaries match the OS/arch.
-      # We call the venv Python directly (no activation) to avoid the Windows
-      # issue where `pip install --upgrade pip` fails because pip can't replace
-      # its own running executable — `python -m pip` works on all platforms.
-      - name: Create Python venv
+      # --copies is critical for macOS/Linux: without it, venv/bin/python is a
+      # symlink to the CI runner's system Python (e.g. /usr/bin/python3.11).
+      # electron-builder copies the symlink but NOT what it points to, so the
+      # bundled app crashes with ENOENT on the user's machine.
+      # --copies replaces symlinks with real binary copies, making the venv
+      # fully self-contained and relocatable inside the .app / .deb / .AppImage.
+      # Windows already uses real .exe files so --copies is safe there too.
+      - name: Create Python venv (--copies for relocatable binaries)
         shell: bash
         run: |
-          python3 -m venv venv
+          python3 -m venv --copies venv
 
-          # Point at the venv Python without activating the shell
+          # Call the venv Python directly — no shell activation needed,
+          # and avoids the Windows "pip can't replace itself" error.
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             VENV_PY="./venv/Scripts/python.exe"
           else
