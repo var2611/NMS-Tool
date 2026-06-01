@@ -82,20 +82,23 @@ jobs:
             libatspi2.0-0 libdrm2 libgbm1 libasound2
 
       # Create a native venv so the bundled Python binaries match the OS/arch.
-      # Windows uses Scripts\activate; macOS/Linux use bin/activate.
+      # We call the venv Python directly (no activation) to avoid the Windows
+      # issue where `pip install --upgrade pip` fails because pip can't replace
+      # its own running executable — `python -m pip` works on all platforms.
       - name: Create Python venv
         shell: bash
         run: |
           python3 -m venv venv
 
+          # Point at the venv Python without activating the shell
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            source venv/Scripts/activate
+            VENV_PY="./venv/Scripts/python.exe"
           else
-            source venv/bin/activate
+            VENV_PY="./venv/bin/python"
           fi
 
-          pip install --upgrade pip -q
-          pip install -r requirements.txt -q
+          "$VENV_PY" -m pip install --upgrade pip -q
+          "$VENV_PY" -m pip install -r requirements.txt -q
 
       - name: Build React frontend
         working-directory: frontend
