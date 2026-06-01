@@ -1,0 +1,162 @@
+name: Release — Bump Version & Tag
+
+# How to release a new version:
+#   GitHub → Actions → "Release — Bump Version & Tag" → Run workflow
+#   Pick bump type (patch / minor / major) OR enter an exact version.
+#   This workflow:
+#     1. Computes the new semver
+#     2. Updates version in package.json, frontend/package.json, core/config.py
+#     3. Commits "chore: bump version to vX.Y.Z"
+#     4. Creates and pushes the git tag vX.Y.Z
+#     5. That tag push automatically triggers "Build Desktop App" which
+#        builds all installers and publishes the GitHub Release.
+#
+# Version history is tracked via git tags. Run:
+#   git tag -l "v*" --sort=-version:refname
+# to see all past releases.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Bump type — ignored when "exact_version" is set'
+        required: true
+        type: choice
+        default: patch
+        options:
+          - patch      # 1.0.0 → 1.0.1  (bug fixes)
+          - minor      # 1.0.0 → 1.1.0  (new features, backward-compatible)
+          - major      # 1.0.0 → 2.0.0  (breaking changes)
+      exact_version:
+        description: 'Exact version to set (e.g. 1.2.3) — overrides bump type if provided'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  bump-and-tag:
+    runs-on: ubuntu-latest
+    name: Bump version & push tag
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need full history for tag inspection
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set git identity
+        run: |
+          git config user.name  "Vardhan Suthar"
+          git config user.email "var2611@gmail.com"
+
+      # ── Compute new version ───────────────────────────────────────────────
+      - name: Compute new version
+        id: ver
+        run: |
+          # Read current version from package.json
+          CURRENT=$(python3 -c "import json; print(json.load(open('package.json'))['version'])")
+          echo "Current version: $CURRENT"
+
+          EXACT="${{ github.event.inputs.exact_version }}"
+          BUMP="${{ github.event.inputs.bump }}"
+
+          if [[ -n "$EXACT" ]]; then
+            # Validate format: must be X.Y.Z
+            if ! [[ "$EXACT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "ERROR: exact_version must be in X.Y.Z format (got: $EXACT)"
+              exit 1
+            fi
+            NEW="$EXACT"
+          else
+            # Split and bump
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+            case "$BUMP" in
+              major) NEW="$((MAJOR+1)).0.0" ;;
+              minor) NEW="${MAJOR}.$((MINOR+1)).0" ;;
+              patch) NEW="${MAJOR}.${MINOR}.$((PATCH+1))" ;;
+            esac
+          fi
+
+          echo "New version: $NEW"
+
+          # Make sure the tag doesn't already exist
+          if git tag -l "v$NEW" | grep -q "v$NEW"; then
+            echo "ERROR: tag v$NEW already exists!"
+            exit 1
+          fi
+
+          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+          echo "new=$NEW"         >> $GITHUB_OUTPUT
+          echo "tag=v$NEW"        >> $GITHUB_OUTPUT
+
+      # ── Update version in all three places ───────────────────────────────
+      - name: Update package.json (root)
+        run: |
+          python3 - << 'PYEOF'
+          import json, re
+          NEW = "${{ steps.ver.outputs.new }}"
+          with open("package.json") as f: data = json.load(f)
+          data["version"] = NEW
+          with open("package.json", "w") as f: json.dump(data, f, indent=2)
+          # json.dump strips trailing newline — add it back
+          open("package.json", "a").write("\n")
+          print(f"package.json → {NEW}")
+          PYEOF
+
+      - name: Update frontend/package.json
+        run: |
+          python3 - << 'PYEOF'
+          import json
+          NEW = "${{ steps.ver.outputs.new }}"
+          with open("frontend/package.json") as f: data = json.load(f)
+          data["version"] = NEW
+          with open("frontend/package.json", "w") as f: json.dump(data, f, indent=2)
+          open("frontend/package.json", "a").write("\n")
+          print(f"frontend/package.json → {NEW}")
+          PYEOF
+
+      - name: Update core/config.py
+        run: |
+          python3 - << 'PYEOF'
+          import re
+          NEW = "${{ steps.ver.outputs.new }}"
+          with open("core/config.py") as f: content = f.read()
+          updated = re.sub(
+              r'(app_version\s*:\s*str\s*=\s*")[^"]+(")',
+              rf'\g<1>{NEW}\g<2>',
+              content
+          )
+          with open("core/config.py", "w") as f: f.write(updated)
+          print(f"core/config.py → {NEW}")
+          PYEOF
+
+      - name: Show diff
+        run: git diff
+
+      # ── Commit, tag, push ─────────────────────────────────────────────────
+      - name: Commit version bump
+        run: |
+          git add package.json frontend/package.json core/config.py
+          git commit -m "chore: bump version to ${{ steps.ver.outputs.tag }}"
+
+      - name: Create and push tag
+        run: |
+          git tag -a "${{ steps.ver.outputs.tag }}" \
+            -m "Release ${{ steps.ver.outputs.tag }}"
+          git push origin master --follow-tags
+
+      - name: Summary
+        run: |
+          echo "### ✅ Version bumped: ${{ steps.ver.outputs.current }} → ${{ steps.ver.outputs.new }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Tag **${{ steps.ver.outputs.tag }}** pushed — the **Build Desktop App** workflow" >> $GITHUB_STEP_SUMMARY
+          echo "is now running to produce the macOS + Windows installers." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "🔗 [Watch the build](https://github.com/${{ github.repository }}/actions)" >> $GITHUB_STEP_SUMMARY
+          echo "🔗 [Releases](https://github.com/${{ github.repository }}/releases)" >> $GITHUB_STEP_SUMMARY
