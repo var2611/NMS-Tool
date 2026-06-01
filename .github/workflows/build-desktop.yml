@@ -194,11 +194,17 @@ jobs:
             echo "body=See commit history for full changelog."  >> $GITHUB_OUTPUT
           else
             SHORT_SHA=$(echo "$GITHUB_SHA" | cut -c1-7)
-            COMMIT_MSG=$(echo "${{ github.event.head_commit.message }}" | head -1)
-            echo "tag=latest"                                             >> $GITHUB_OUTPUT
-            echo "name=Latest Build"                                      >> $GITHUB_OUTPUT
-            echo "prerelease=true"                                        >> $GITHUB_OUTPUT
-            echo "body=Auto-built from \`$SHORT_SHA\` — $COMMIT_MSG"     >> $GITHUB_OUTPUT
+            # Use git log — safe even when commit messages are multi-line
+            COMMIT_MSG=$(git log -1 --format='%s')
+            echo "tag=latest"           >> $GITHUB_OUTPUT
+            echo "name=Latest Build"    >> $GITHUB_OUTPUT
+            echo "prerelease=true"      >> $GITHUB_OUTPUT
+            # Multi-line body format required when value may contain newlines
+            {
+              echo "body<<EOF"
+              echo "Auto-built from \`$SHORT_SHA\` — $COMMIT_MSG"
+              echo "EOF"
+            } >> $GITHUB_OUTPUT
           fi
 
       # For master push: force-move the 'latest' tag to the current commit
