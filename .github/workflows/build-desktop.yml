@@ -110,8 +110,44 @@ jobs:
             --add-data "api${SEP}api" \
             --add-data "core${SEP}core" \
             --add-data "frontend/dist${SEP}frontend/dist" \
+            --collect-all "uvicorn" \
+            --collect-all "fastapi" \
+            --collect-all "starlette" \
+            --collect-all "pydantic" \
+            --collect-all "pydantic_settings" \
+            --collect-all "pydantic_core" \
+            --collect-all "sqlalchemy" \
+            --collect-all "aiosqlite" \
+            --collect-all "asyncpg" \
+            --collect-all "alembic" \
+            --collect-all "pysnmp" \
+            --collect-all "pyasn1" \
+            --collect-all "bcrypt" \
+            --collect-all "jose" \
+            --collect-all "cryptography" \
+            --collect-all "aiofiles" \
+            --collect-all "apscheduler" \
+            --collect-all "psutil" \
+            --collect-all "netaddr" \
+            --collect-all "httpx" \
+            --collect-all "python_multipart" \
+            --collect-all "dotenv" \
+            --collect-all "anyio" \
+            --collect-all "sniffio" \
+            --collect-all "h11" \
+            --collect-all "websockets" \
+            --collect-all "wsproto" \
+            --hidden-import "email.mime.text" \
+            --hidden-import "email.mime.multipart" \
+            --hidden-import "email.mime.base" \
+            --hidden-import "email.header" \
+            --hidden-import "email.utils" \
+            --hidden-import "smtplib" \
+            --hidden-import "ssl" \
+            --hidden-import "ipaddress" \
             --hidden-import "uvicorn.logging" \
             --hidden-import "uvicorn.loops.auto" \
+            --hidden-import "uvicorn.loops.asyncio" \
             --hidden-import "uvicorn.protocols.http.auto" \
             --hidden-import "uvicorn.protocols.http.h11_impl" \
             --hidden-import "uvicorn.protocols.websockets.auto" \
@@ -121,12 +157,7 @@ jobs:
             --hidden-import "sqlalchemy.sql.default_comparator" \
             --hidden-import "sqlalchemy.dialects.sqlite" \
             --hidden-import "sqlalchemy.dialects.sqlite.aiosqlite" \
-            --hidden-import "aiosqlite" \
-            --collect-all "pysnmp" \
-            --collect-all "pyasn1" \
-            --collect-all "fastapi" \
-            --collect-all "starlette" \
-            backend_entry.py 2>&1 | tail -15
+            backend_entry.py 2>&1 | tail -5
 
           echo "=== PyInstaller output ===" && ls -lh dist-backend/nms-backend/ | head -8
 
