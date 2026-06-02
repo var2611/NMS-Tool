@@ -105,7 +105,7 @@ async def snmp_get(ip: str, oids: List[str], community: str = "public",
     else:
         auth_data = CommunityData(community, mpModel=1)
 
-    transport = await UdpTransportTarget.create(
+    transport = UdpTransportTarget(
         (ip, port), timeout=timeout, retries=retries
     )
 
@@ -137,7 +137,12 @@ async def snmp_get(ip: str, oids: List[str], community: str = "public",
 async def snmp_walk(ip: str, base_oid: str, community: str = "public",
                     version: str = "v2c", port: int = 161,
                     timeout: int = 5, max_rows: int = 50) -> Dict[str, str]:
-    """Walk an OID subtree."""
+    """Walk an OID subtree.
+
+    pysnmp 6.x: nextCmd is a single-shot coroutine (not an async generator).
+    We call it repeatedly in a manual loop, advancing the OID each time,
+    until we leave the base subtree or hit max_rows.
+    """
     results = {}
 
     if version == "v1":
@@ -145,26 +150,47 @@ async def snmp_walk(ip: str, base_oid: str, community: str = "public",
     else:
         auth_data = CommunityData(community, mpModel=1)
 
-    transport = await UdpTransportTarget.create((ip, port), timeout=timeout, retries=1)
     snmp_eng = SnmpEngine()
-
+    current_oid = base_oid
     count = 0
-    async for (err_ind, err_stat, err_idx, var_binds) in nextCmd(
-        snmp_eng, auth_data, transport, ContextData(),
-        ObjectType(ObjectIdentity(base_oid)),
-        lexicographicMode=False
-    ):
+
+    while count < max_rows:
+        try:
+            transport = UdpTransportTarget((ip, port), timeout=timeout, retries=1)
+            err_ind, err_stat, err_idx, var_binds = await nextCmd(
+                snmp_eng, auth_data, transport, ContextData(),
+                ObjectType(ObjectIdentity(current_oid))
+            )
+        except Exception:
+            break
+
         if err_ind or err_stat:
             break
-        for var_bind in var_binds:
+
+        if not var_binds:
+            break
+
+        # var_binds in pysnmp 6.x is a list of lists: [[ObjectType, ...]]
+        row = var_binds[0] if var_binds and isinstance(var_binds[0], list) else var_binds
+        advanced = False
+        for var_bind in row:
             oid_str = str(var_bind[0])
+            # Stop if we've walked outside the requested subtree
+            if not oid_str.startswith(base_oid.split('.')[0]):
+                return results
+            # Also stop if OID didn't advance (avoid infinite loop)
+            if oid_str == current_oid:
+                return results
             try:
                 results[oid_str] = var_bind[1].prettyPrint()
             except Exception:
                 results[oid_str] = str(var_bind[1])
             count += 1
-            if count >= max_rows:
-                return results
+            current_oid = oid_str
+            advanced = True
+
+        if not advanced:
+            break
 
     return results
 
@@ -549,7 +575,7 @@ async def send_test_trap(target_ip: str, port: int = 162,
     else:
         auth_data = CommunityData(community, mpModel=1)
 
-    transport = await UdpTransportTarget.create((target_ip, port), timeout=3, retries=1)
+    transport = UdpTransportTarget((target_ip, port), timeout=3, retries=1)
     snmp_eng = SnmpEngine()
 
     start_time = datetime.utcnow()
