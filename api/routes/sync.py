@@ -140,6 +140,8 @@ async def sync_device(payload: SyncPayload, db: AsyncSession = Depends(get_db)):
     try:    status = DeviceStatus(d.get("status", "unknown"))
     except: status = DeviceStatus.unknown
 
+    now = datetime.utcnow()
+
     if device is None:
         device = Device(
             name=d.get("name") or d.get("ip_address", "Unknown"),
@@ -156,33 +158,40 @@ async def sync_device(payload: SyncPayload, db: AsyncSession = Depends(get_db)):
             model=d.get("model"),
             notes=d.get("notes"),
             auto_discovered=d.get("auto_discovered", False),
-            poll_interval=d.get("poll_interval", 300),
+            # poll_interval set to 0 — this device is NEVER polled by the server.
+            # All data flows exclusively through the sync channel from site_name.
+            poll_interval=0,
+            last_seen=_parse_dt(d.get("last_seen")) or (now if status == DeviceStatus.online else None),
+            uptime_seconds=d.get("uptime_seconds"),
             is_active=True,
             sync_status=SyncStatus.synced,
-            synced_at=datetime.utcnow(),
-            # Origin
+            synced_at=now,
             source="desktop_sync",
             site_name=site,
         )
         db.add(device)
         action = "created"
     else:
-        device.name        = d.get("name") or device.name
-        device.device_type = dtype
-        device.status      = status
+        device.name           = d.get("name") or device.name
+        device.device_type    = dtype
+        device.status         = status
         device.snmp_community = d.get("snmp_community") or device.snmp_community
-        device.sys_descr   = d.get("sys_descr")   or device.sys_descr
-        device.sys_name    = d.get("sys_name")     or device.sys_name
-        device.sys_location = d.get("sys_location") or device.sys_location
-        device.vendor      = d.get("vendor")       or device.vendor
-        device.model       = d.get("model")        or device.model
-        device.last_seen   = _parse_dt(d.get("last_seen")) or device.last_seen
+        device.sys_descr      = d.get("sys_descr")    or device.sys_descr
+        device.sys_name       = d.get("sys_name")      or device.sys_name
+        device.sys_location   = d.get("sys_location")  or device.sys_location
+        device.vendor         = d.get("vendor")        or device.vendor
+        device.model          = d.get("model")         or device.model
+        # Update live status from the desktop — this is the authoritative source
+        device.last_seen      = _parse_dt(d.get("last_seen")) or (now if status == DeviceStatus.online else device.last_seen)
         device.uptime_seconds = d.get("uptime_seconds") or device.uptime_seconds
-        device.sync_status = SyncStatus.synced
-        device.synced_at   = datetime.utcnow()
-        device.source      = "desktop_sync"
-        device.site_name   = site
-        device.is_active   = True
+        device.last_polled    = now   # "polled" = "last data received from desktop"
+        device.consecutive_failures = 0 if status == DeviceStatus.online else device.consecutive_failures
+        device.sync_status    = SyncStatus.synced
+        device.synced_at      = now
+        device.source         = "desktop_sync"
+        device.site_name      = site
+        device.is_active      = True
+        device.poll_interval  = 0     # ensure server never starts polling this device
         action = "updated"
 
     await db.commit()
@@ -298,6 +307,15 @@ async def sync_metric(payload: SyncPayload, db: AsyncSession = Depends(get_db)):
         custom_metrics=d.get("custom_metrics"),
     )
     db.add(metric)
+
+    # Update the device's last_polled timestamp so the UI shows "active" state
+    if device_id:
+        result2 = await db.execute(select(Device).where(Device.id == device_id))
+        dev = result2.scalar_one_or_none()
+        if dev:
+            dev.last_polled = _parse_dt(d.get("timestamp")) or datetime.utcnow()
+            dev.synced_at   = datetime.utcnow()
+
     await db.commit()
     return {"status": "ok", "action": "created"}
 

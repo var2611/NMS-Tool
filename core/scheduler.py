@@ -51,12 +51,25 @@ class PollingScheduler:
         return settings.snmp_timeout
 
     async def _manage_poll_tasks(self):
-        """Periodically sync polling tasks with DB device list."""
+        """Periodically sync polling tasks with DB device list.
+
+        Devices with source='desktop_sync' are EXCLUDED from server-side SNMP
+        polling. Their status and metrics arrive exclusively through the sync
+        channel from the owning desktop agent. Polling them from the server
+        would:
+          • create conflicts if the server can't reach that LAN
+          • overwrite live metrics from the desktop with stale/wrong values
+          • double-count data and generate spurious alerts
+        """
         while self._running:
             try:
                 async with AsyncSessionLocal() as session:
                     result = await session.execute(
-                        select(Device).where(Device.is_active == True)
+                        select(Device).where(
+                            Device.is_active == True,
+                            # Only poll locally-owned devices
+                            (Device.source != "desktop_sync") | (Device.source == None),
+                        )
                     )
                     devices = result.scalars().all()
 
