@@ -134,7 +134,8 @@ class DeviceMetric(Base):
     __tablename__ = "device_metrics"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    device_id: Mapped[int] = mapped_column(Integer, ForeignKey("devices.id"), index=True)
+    # Nullable: synced metrics may arrive before the device is registered on the server
+    device_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("devices.id"), nullable=True, index=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     
     # Common metrics
@@ -358,11 +359,14 @@ _MIGRATIONS = [
 ]
 
 async def _run_migrations(conn):
-    """Safely add missing columns to existing tables (SQLite + PostgreSQL)."""
+    """Safely add missing columns and fix constraints on existing tables."""
     from sqlalchemy import text, inspect as sa_inspect
 
     def _migrate(sync_conn):
         inspector = sa_inspect(sync_conn)
+        dialect = sync_conn.dialect.name  # "sqlite" or "postgresql"
+
+        # 1. Add missing columns
         for table, column, col_def in _MIGRATIONS:
             existing = {c["name"] for c in inspector.get_columns(table)}
             if column not in existing:
@@ -371,9 +375,19 @@ async def _run_migrations(conn):
                         text(f'ALTER TABLE {table} ADD COLUMN {column} {col_def}')
                     )
                     sync_conn.commit()
-                except Exception as exc:
-                    # Already exists (race) or not supported — ignore
+                except Exception:
                     pass
+
+        # 2. Make device_metrics.device_id nullable (needed for synced metrics
+        #    that arrive before the parent device is registered on the server)
+        if dialect == "postgresql":
+            try:
+                sync_conn.execute(text(
+                    "ALTER TABLE device_metrics ALTER COLUMN device_id DROP NOT NULL"
+                ))
+                sync_conn.commit()
+            except Exception:
+                pass  # Already nullable or doesn't exist yet
 
     await conn.run_sync(_migrate)
 

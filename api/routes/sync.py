@@ -273,6 +273,12 @@ async def sync_metric(payload: SyncPayload, db: AsyncSession = Depends(get_db)):
         if dev:
             device_id = dev.id
 
+    # Skip the metric if the device hasn't been synced yet.
+    # device_metrics.device_id is NOT NULL, so we must have a valid ID.
+    # The device will arrive shortly in the next sync cycle.
+    if device_id is None:
+        return {"status": "skipped", "reason": "device not yet registered — metric will retry"}
+
     metric = DeviceMetric(
         device_id=device_id,
         timestamp=_parse_dt(d.get("timestamp")) or datetime.utcnow(),
