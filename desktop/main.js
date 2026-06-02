@@ -4,6 +4,7 @@ const path = require('path')
 const fs = require('fs')
 const http = require('http')
 const os = require('os')
+const { autoUpdater } = require('electron-updater')
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
@@ -232,6 +233,7 @@ app.whenReady().then(() => {
   createWindow()
   createTray()
   startBackend()
+  setupAutoUpdater()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -253,6 +255,84 @@ app.on('before-quit', () => {
   }
 })
 
+// ─── Auto-Updater ─────────────────────────────────────────────────────────────
+
+function setupAutoUpdater() {
+  // Only run in packaged app — skip in dev mode
+  if (!app.isPackaged) return
+
+  autoUpdater.autoDownload = false        // ask user before downloading
+  autoUpdater.autoInstallOnAppQuit = true // install silently when user quits
+
+  autoUpdater.on('checking-for-update', () => {
+    console.log('[updater] Checking for update...')
+  })
+
+  autoUpdater.on('update-available', (info) => {
+    console.log(`[updater] Update available: v${info.version}`)
+    // Notify the renderer so it can show a banner
+    if (mainWindow) {
+      mainWindow.webContents.send('update-available', {
+        version: info.version,
+        releaseNotes: info.releaseNotes || '',
+        releaseDate: info.releaseDate,
+      })
+    }
+  })
+
+  autoUpdater.on('update-not-available', () => {
+    console.log('[updater] App is up to date')
+  })
+
+  autoUpdater.on('download-progress', (progress) => {
+    const pct = Math.round(progress.percent)
+    console.log(`[updater] Downloading... ${pct}%`)
+    if (mainWindow) {
+      mainWindow.webContents.send('update-download-progress', { percent: pct, bytesPerSecond: progress.bytesPerSecond })
+    }
+  })
+
+  autoUpdater.on('update-downloaded', (info) => {
+    console.log(`[updater] Update downloaded: v${info.version}`)
+    if (mainWindow) {
+      mainWindow.webContents.send('update-downloaded', { version: info.version })
+    }
+  })
+
+  autoUpdater.on('error', (err) => {
+    console.error('[updater] Error:', err.message)
+    if (mainWindow) {
+      mainWindow.webContents.send('update-error', { message: err.message })
+    }
+  })
+
+  // Check 10 seconds after app is ready (let backend start first)
+  setTimeout(() => {
+    autoUpdater.checkForUpdates().catch(err => {
+      console.error('[updater] Check failed:', err.message)
+    })
+  }, 10_000)
+
+  // Re-check every 4 hours
+  setInterval(() => {
+    autoUpdater.checkForUpdates().catch(() => {})
+  }, 4 * 60 * 60 * 1000)
+}
+
 // IPC handlers
 ipcMain.handle('get-app-version', () => app.getVersion())
 ipcMain.handle('get-user-data-path', () => app.getPath('userData'))
+
+// Updater IPC
+ipcMain.handle('start-update-download', async () => {
+  try {
+    await autoUpdater.downloadUpdate()
+  } catch (err) {
+    return { error: err.message }
+  }
+})
+
+ipcMain.handle('install-update-now', () => {
+  app.isQuitting = true
+  autoUpdater.quitAndInstall(false, true)
+})

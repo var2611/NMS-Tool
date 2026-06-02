@@ -1,60 +1,51 @@
 name: Build Desktop App
 
 # Triggers:
-#   - Every push to master  → updates the rolling "Latest Build" pre-release
-#   - Push a tag v*.*.*     → creates a proper versioned release
-#   - Manual run            → same as master push (use workflow_dispatch)
+#   - Push a tag v*.*.*  → builds all platforms, publishes a proper GitHub Release,
+#                          and generates the latest.yml / latest-mac.yml metadata
+#                          files that electron-updater uses for in-app updates.
+#   - Manual run         → same (use workflow_dispatch to build without a tag)
+#
+# Master branch pushes NO LONGER trigger a build.
+# Use the "Release — Bump Version & Tag" workflow to cut a release.
 on:
   push:
-    branches: [master]
     tags:
       - 'v*'
   workflow_dispatch:
 
 permissions:
-  contents: write   # required to create/update releases and push the 'latest' tag
+  contents: write   # required to create GitHub Releases
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # suppress Node 20 deprecation warnings
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   # ──────────────────────────────────────────────────────────────────────────
-  # BUILD  — three parallel jobs
+  # BUILD  — three parallel jobs (mac-arm64, linux, windows)
   #
-  # mac-arm64 : macos-14 runner → .dmg for Apple Silicon (M1/M2/M3)
-  # linux     : ubuntu-22.04   → .deb + .AppImage for Linux x64
-  # windows   : windows-latest → NSIS .exe for Windows x64
-  #
-  # Each job:
-  #   1. Installs Python deps + PyInstaller
-  #   2. Runs PyInstaller to build nms-backend (standalone binary, no
-  #      external Python framework deps — fixes macOS dyld crash)
-  #   3. Builds the React frontend
-  #   4. Runs electron-builder to produce the installer
-  #   5. Uploads the installer as a workflow artifact for the release job
+  # electron-builder --publish always:
+  #   • Builds the installer
+  #   • Uploads it to a GitHub Release (creates the release if needed)
+  #   • Generates latest.yml / latest-mac.yml metadata used by electron-updater
+  #     so the in-app auto-updater can check and download new versions silently.
   # ──────────────────────────────────────────────────────────────────────────
   build:
     strategy:
-      fail-fast: false   # don't cancel sibling jobs if one fails
+      fail-fast: false
       matrix:
         include:
-          # macOS Apple Silicon — M1 / M2 / M3 Macs
-          - platform: mac-arm64
-            os: macos-14
-            build_cmd: npx electron-builder --mac --arm64 --publish never
-            artifact_glob: dist-electron/*.dmg
+          - os: macos-14
+            platform: mac-arm64
+            build_cmd: npx electron-builder --mac --arm64 --publish always
 
-          # Linux x64 — .deb (Debian/Ubuntu) + .AppImage (universal)
-          - platform: linux
-            os: ubuntu-22.04
-            build_cmd: npx electron-builder --linux --x64 --publish never
-            artifact_glob: "dist-electron/*.deb\n            dist-electron/*.AppImage"
+          - os: ubuntu-22.04
+            platform: linux
+            build_cmd: npx electron-builder --linux --x64 --publish always
 
-          # Windows x64 — NSIS installer (.exe)
-          - platform: windows
-            os: windows-latest
-            build_cmd: npx electron-builder --win --x64 --publish never
-            artifact_glob: dist-electron/*.exe
+          - os: windows-latest
+            platform: windows
+            build_cmd: npx electron-builder --win --x64 --publish always
 
     runs-on: ${{ matrix.os }}
     name: Build (${{ matrix.platform }})
@@ -73,7 +64,6 @@ jobs:
         with:
           python-version: '3.11'
 
-      # electron-builder needs these system libraries to produce deb / AppImage
       - name: Install Linux build dependencies
         if: matrix.platform == 'linux'
         run: |
@@ -83,20 +73,13 @@ jobs:
             libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
             libatspi2.0-0 libdrm2 libgbm1 libasound2
 
-      # Frontend must be built BEFORE PyInstaller so frontend/dist exists
-      # when PyInstaller bundles it via --add-data
+      # Frontend must be built BEFORE PyInstaller (PyInstaller bundles frontend/dist)
       - name: Build React frontend
         working-directory: frontend
         run: |
           npm ci
           npm run build
 
-      # PyInstaller bundles Python + all deps into a standalone binary with
-      # NO external framework dependencies. This solves the macOS
-      # "dyld: Library not loaded: /Library/Frameworks/Python.framework"
-      # crash that happens with venv — even with --copies, the Python binary
-      # links against an absolute framework path that only exists on the CI
-      # runner, not on the user's machine.
       - name: Install Python deps + PyInstaller
         shell: bash
         run: |
@@ -106,7 +89,6 @@ jobs:
       - name: Build standalone backend binary (PyInstaller)
         shell: bash
         run: |
-          # --add-data separator: ':' on Unix, ';' on Windows
           if [[ "${{ runner.os }}" == "Windows" ]]; then SEP=";"; else SEP=":"; fi
 
           python3 -m PyInstaller \
@@ -148,7 +130,6 @@ jobs:
             --hidden-import "email.mime.text" \
             --hidden-import "email.mime.multipart" \
             --hidden-import "email.mime.base" \
-            --hidden-import "email.header" \
             --hidden-import "email.utils" \
             --hidden-import "smtplib" \
             --hidden-import "ssl" \
@@ -167,134 +148,24 @@ jobs:
             --hidden-import "sqlalchemy.dialects.sqlite.aiosqlite" \
             backend_entry.py 2>&1 | tail -5
 
-          echo "=== PyInstaller output ===" && ls -lh dist-backend/nms-backend/ | head -8
+          echo "=== PyInstaller output ===" && ls -lh dist-backend/nms-backend/ | head -6
 
-      - name: Install Electron / electron-builder
+      - name: Install Electron + electron-updater
         run: npm install
 
+      # electron-builder --publish always:
+      #   • Builds the installer
+      #   • Creates/updates the GitHub Release for this tag
+      #   • Uploads the installer + latest.yml metadata to the release
       # CSC_IDENTITY_AUTO_DISCOVERY=false skips macOS code-signing in CI.
-      # Users see "unidentified developer" on first launch — right-click → Open.
-      # Add CSC_LINK + CSC_KEY_PASSWORD repo secrets to enable proper signing.
-      - name: Build Electron installer
+      # Add CSC_LINK + CSC_KEY_PASSWORD secrets to enable proper signing.
+      - name: Build and publish installer
         run: ${{ matrix.build_cmd }}
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
       - name: List output files
         shell: bash
         run: ls -lh dist-electron/
-
-      # Upload installers for the release job to collect
-      - name: Upload installer artifact (mac / windows)
-        if: matrix.platform != 'linux'
-        uses: actions/upload-artifact@v7
-        with:
-          name: installer-${{ matrix.platform }}
-          path: ${{ matrix.artifact_glob }}
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Upload installer artifact (linux)
-        if: matrix.platform == 'linux'
-        uses: actions/upload-artifact@v7
-        with:
-          name: installer-linux
-          path: |
-            dist-electron/*.deb
-            dist-electron/*.AppImage
-          if-no-files-found: error
-          retention-days: 1
-
-  # ──────────────────────────────────────────────────────────────────────────
-  # RELEASE  — runs after ALL THREE builds succeed
-  # Downloads every installer and publishes them in one GitHub Release.
-  # A single release job avoids race conditions from parallel uploads.
-  # ──────────────────────────────────────────────────────────────────────────
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    name: Publish Release
-
-    steps:
-      - name: Checkout (needed to push the 'latest' git tag)
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - name: Download macOS arm64 installer
-        uses: actions/download-artifact@v8
-        with:
-          name: installer-mac-arm64
-          path: release-files/
-
-      - name: Download Linux installers
-        uses: actions/download-artifact@v8
-        with:
-          name: installer-linux
-          path: release-files/
-
-      - name: Download Windows installer
-        uses: actions/download-artifact@v8
-        with:
-          name: installer-windows
-          path: release-files/
-
-      - name: List all release files
-        run: ls -lh release-files/
-
-      # Compute tag name, title, prerelease flag, and release body
-      - name: Set release metadata
-        id: meta
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            echo "tag=$GITHUB_REF_NAME"                         >> $GITHUB_OUTPUT
-            echo "name=SentinelNMS $GITHUB_REF_NAME"            >> $GITHUB_OUTPUT
-            echo "prerelease=false"                             >> $GITHUB_OUTPUT
-            echo "body=See commit history for full changelog."  >> $GITHUB_OUTPUT
-          else
-            SHORT_SHA=$(echo "$GITHUB_SHA" | cut -c1-7)
-            # Use git log — safe even when commit messages are multi-line
-            COMMIT_MSG=$(git log -1 --format='%s')
-            echo "tag=latest"           >> $GITHUB_OUTPUT
-            echo "name=Latest Build"    >> $GITHUB_OUTPUT
-            echo "prerelease=true"      >> $GITHUB_OUTPUT
-            # Multi-line body format required when value may contain newlines
-            {
-              echo "body<<EOF"
-              echo "Auto-built from \`$SHORT_SHA\` — $COMMIT_MSG"
-              echo "EOF"
-            } >> $GITHUB_OUTPUT
-          fi
-
-      # For master push: force-move the 'latest' tag to the current commit
-      - name: Force-update 'latest' git tag
-        if: github.ref == 'refs/heads/master'
-        run: |
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git config user.name "github-actions[bot]"
-          git tag -fa latest -m "Latest build ($GITHUB_SHA)"
-          git push origin latest --force
-
-      # Delete the stale 'latest' release before recreating it with fresh files
-      - name: Delete existing 'latest' release
-        if: github.ref == 'refs/heads/master'
-        run: gh release delete latest --yes 2>/dev/null || true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create GitHub Release
-        run: |
-          PRERELEASE_FLAG=""
-          [[ "${{ steps.meta.outputs.prerelease }}" == "true" ]] && PRERELEASE_FLAG="--prerelease"
-
-          NOTES_FLAG=""
-          [[ "$GITHUB_REF" == refs/tags/v* ]] && NOTES_FLAG="--generate-notes"
-
-          gh release create "${{ steps.meta.outputs.tag }}" \
-            release-files/* \
-            --title "${{ steps.meta.outputs.name }}" \
-            --notes "${{ steps.meta.outputs.body }}" \
-            $PRERELEASE_FLAG \
-            $NOTES_FLAG
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
