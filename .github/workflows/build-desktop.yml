@@ -83,6 +83,14 @@ jobs:
             libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
             libatspi2.0-0 libdrm2 libgbm1 libasound2
 
+      # Frontend must be built BEFORE PyInstaller so frontend/dist exists
+      # when PyInstaller bundles it via --add-data
+      - name: Build React frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
       # PyInstaller bundles Python + all deps into a standalone binary with
       # NO external framework dependencies. This solves the macOS
       # "dyld: Library not loaded: /Library/Frameworks/Python.framework"
@@ -160,12 +168,6 @@ jobs:
             backend_entry.py 2>&1 | tail -5
 
           echo "=== PyInstaller output ===" && ls -lh dist-backend/nms-backend/ | head -8
-
-      - name: Build React frontend
-        working-directory: frontend
-        run: |
-          npm ci
-          npm run build
 
       - name: Install Electron / electron-builder
         run: npm install
