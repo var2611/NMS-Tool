@@ -48,6 +48,13 @@ export const useStore = create((set, get) => ({
     return { theme: next }
   }),
 
+  // Timezone (frontend display only — DB stores everything as UTC)
+  timezone: localStorage.getItem('nms_timezone') || 'UTC',
+  setTimezone: (tz) => {
+    localStorage.setItem('nms_timezone', tz)
+    set({ timezone: tz })
+  },
+
   sidebarOpen: true,
   toggleSidebar: () => set(state => ({ sidebarOpen: !state.sidebarOpen })),
 

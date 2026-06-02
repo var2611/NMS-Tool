@@ -31,6 +31,8 @@ export const devicesApi = {
   poll: (id) => api.post(`/devices/${id}/poll`),
   metrics: (id, hours=24) => api.get(`/devices/${id}/metrics`, { params: { hours } }),
   summary: () => api.get('/devices/summary'),
+  getInterfaces: (id) => api.get(`/devices/${id}/interfaces`),
+  saveInterfaces: (id, indexes) => api.post(`/devices/${id}/interfaces`, { indexes }),
 }
 
 export const discoveryApi = {
@@ -77,4 +79,9 @@ export const settingsApi = {
   configurSync: (data) => api.post('/settings/sync', data),
   testSync: () => api.post('/settings/sync/test'),
   testSmtp: (data) => api.post('/settings/smtp/test', data),
+  saveSnmp: (data) => api.put('/settings/snmp', data),
+  syncSites: () => api.get('/sync/sites'),
+  syncLog: (limit = 30) => api.get('/sync/log', { params: { limit } }),
+  syncFailedQueue: () => api.get('/sync/queue/failed'),
+  syncRetryFailed: () => api.post('/sync/queue/retry'),
 }

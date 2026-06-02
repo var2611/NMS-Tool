@@ -60,14 +60,45 @@ class SyncAgent:
         self._running = False
         if self._client:
             await self._client.aclose()
+            self._client = None
+
+    async def reconfigure(self, server_url: str, api_key: str = "",
+                          site_name: str = "", interval_minutes: int = 5):
+        """
+        Live-reconfigure sync with new settings and (re)start the agent.
+        Called when the user saves Settings → Cloud Sync.
+        """
+        # Stop the current agent
+        await self.stop()
+
+        # Apply new config
+        self.server_url = server_url
+        self.api_key = api_key
+        self.interval = interval_minutes * 60
+        self.enabled = bool(server_url)
+        self._is_connected = False
+        self._last_error = None
+
+        # Update the global settings object too so site_name is used in payloads
+        if site_name:
+            settings.sync_site_name = site_name
+
+        # (Re)start if URL is set
+        if self.enabled:
+            import asyncio
+            asyncio.create_task(self.start())
+            logger.info(f"Sync agent reconfigured → {server_url} (site={site_name or settings.sync_site_name})")
 
     async def _sync_cycle(self):
-        """Run one sync cycle: check connection, push pending data."""
+        """Run one sync cycle: check connection, push pending data, write log."""
         from core.database import AsyncSessionLocal
-        from core.database import SyncQueue, SyncStatus
-        from sqlalchemy import select
+        from core.database import SyncQueue, SyncStatus, SyncLog
+        from sqlalchemy import select, func
+        import time
 
-        # Test connection
+        start_ms = time.monotonic()
+
+        # ── 1. Test connection ─────────────────────────────────────────────────
         try:
             resp = await self._client.get("/api/v1/ping")
             if resp.status_code == 200:
@@ -75,14 +106,21 @@ class SyncAgent:
                 self._last_error = None
             else:
                 self._is_connected = False
+                self._last_error = f"Server returned HTTP {resp.status_code}"
+                await self._write_log("offline", 0, 0, 0,
+                                      int((time.monotonic() - start_ms) * 1000),
+                                      self._last_error)
                 return
         except Exception as e:
             self._is_connected = False
             self._last_error = f"Cannot reach server: {e}"
-            logger.warning(f"Sync: server unreachable — queuing data locally")
+            logger.warning(f"Sync: server unreachable — {e}")
+            await self._write_log("offline", 0, 0, 0,
+                                  int((time.monotonic() - start_ms) * 1000),
+                                  self._last_error)
             return
 
-        # Push pending queue items
+        # ── 2. Push pending queue items ────────────────────────────────────────
         async with AsyncSessionLocal() as session:
             result = await session.execute(
                 select(SyncQueue)
@@ -94,6 +132,7 @@ class SyncAgent:
 
             pushed = 0
             failed = 0
+            last_error = None
             for item in items:
                 success = await self._push_item(item)
                 if success:
@@ -105,13 +144,60 @@ class SyncAgent:
                     item.last_attempt = datetime.utcnow()
                     if item.attempts >= 5:
                         item.status = SyncStatus.failed
+                    last_error = item.error
                     failed += 1
 
+            # Count remaining pending items (after this batch)
+            pending_result = await session.execute(
+                select(func.count(SyncQueue.id)).where(SyncQueue.status == SyncStatus.pending)
+            )
+            still_pending = pending_result.scalar() or 0
+
             await session.commit()
-            
-            if pushed or failed:
-                logger.info(f"Sync: pushed={pushed}, failed={failed}")
-            self._last_sync = datetime.utcnow()
+
+        duration = int((time.monotonic() - start_ms) * 1000)
+
+        # ── 3. Write sync log entry ────────────────────────────────────────────
+        if failed == 0:
+            cycle_status = "success"
+        elif pushed > 0:
+            cycle_status = "partial"
+        else:
+            cycle_status = "failed"
+
+        await self._write_log(cycle_status, pushed, failed, still_pending,
+                              duration, last_error if failed > 0 else None)
+
+        if pushed or failed:
+            logger.info(f"Sync: pushed={pushed}, failed={failed}, pending={still_pending} ({duration}ms)")
+        self._last_sync = datetime.utcnow()
+
+    async def _write_log(self, status: str, pushed: int, failed: int,
+                         pending: int, duration_ms: int, error: Optional[str]):
+        """Append one entry to sync_log. Prune entries older than 7 days."""
+        from core.database import AsyncSessionLocal, SyncLog
+        from sqlalchemy import delete as sa_delete
+        try:
+            async with AsyncSessionLocal() as session:
+                entry = SyncLog(
+                    status=status,
+                    items_pushed=pushed,
+                    items_failed=failed,
+                    items_pending=pending,
+                    duration_ms=duration_ms,
+                    error=error,
+                    server_url=self.server_url,
+                )
+                session.add(entry)
+                # Prune logs older than 7 days to keep the DB lean
+                cutoff = datetime.utcnow().replace(hour=0, minute=0, second=0) - \
+                         __import__('datetime').timedelta(days=7)
+                await session.execute(
+                    sa_delete(SyncLog).where(SyncLog.timestamp < cutoff)
+                )
+                await session.commit()
+        except Exception as exc:
+            logger.debug(f"Could not write sync log: {exc}")
 
     async def _push_item(self, item) -> bool:
         """Push a single queue item to the server."""
@@ -131,7 +217,9 @@ class SyncAgent:
                 "entity_type": item.entity_type,
                 "entity_id": item.entity_id,
                 "data": item.payload,
-                "site_id": settings.sync_api_key,
+                "site_id": settings.sync_api_key,          # kept for backward compat
+                "site_name": settings.sync_site_name,       # human-readable site identifier
+                "app_version": settings.app_version,
                 "timestamp": item.created_at.isoformat() if item.created_at else None,
             }
             resp = await self._client.post(endpoint, json=payload)

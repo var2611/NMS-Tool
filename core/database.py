@@ -118,6 +118,12 @@ class Device(Base):
     sync_status: Mapped[SyncStatus] = mapped_column(Enum(SyncStatus), default=SyncStatus.pending)
     synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
+    # Origin tracking
+    # source: "manual" | "discovery" | "desktop_sync"
+    source: Mapped[str] = mapped_column(String(50), default="manual")
+    # site_name: null for local devices; set to the desktop agent's site name for synced devices
+    site_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+
     # Relationships
     metrics: Mapped[List["DeviceMetric"]] = relationship("DeviceMetric", back_populates="device", cascade="all, delete-orphan")
     alerts: Mapped[List["Alert"]] = relationship("Alert", back_populates="device", cascade="all, delete-orphan")
@@ -301,6 +307,36 @@ class User(Base):
     last_login: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
+class SyncLog(Base):
+    """One entry per sync cycle — records what was pushed, failed, and why."""
+    __tablename__ = "sync_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    # "success" | "partial" | "failed" | "offline"
+    status: Mapped[str] = mapped_column(String(20), default="success")
+    items_pushed: Mapped[int] = mapped_column(Integer, default=0)
+    items_failed: Mapped[int] = mapped_column(Integer, default=0)
+    items_pending: Mapped[int] = mapped_column(Integer, default=0)
+    duration_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    server_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+
+
+class SyncSite(Base):
+    """Registry of desktop agents that have synced to this server."""
+    __tablename__ = "sync_sites"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    site_name: Mapped[str] = mapped_column(String(200), unique=True, index=True)
+    api_key_hint: Mapped[Optional[str]] = mapped_column(String(12), nullable=True)  # first 12 chars only
+    device_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_seen: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_sync: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    software_version: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class SystemSetting(Base):
     __tablename__ = "system_settings"
 
@@ -313,9 +349,39 @@ class SystemSetting(Base):
 
 # ─── DB Init ──────────────────────────────────────────────────────────────────
 
+# Columns added in later versions that may be missing in existing DBs.
+# Each entry: (table, column, DDL type + default).
+# init_db() runs these as ALTER TABLE … ADD COLUMN IF NOT EXISTS on first startup.
+_MIGRATIONS = [
+    ("devices", "source",    "VARCHAR(50) DEFAULT 'manual'"),
+    ("devices", "site_name", "VARCHAR(200)"),
+]
+
+async def _run_migrations(conn):
+    """Safely add missing columns to existing tables (SQLite + PostgreSQL)."""
+    from sqlalchemy import text, inspect as sa_inspect
+
+    def _migrate(sync_conn):
+        inspector = sa_inspect(sync_conn)
+        for table, column, col_def in _MIGRATIONS:
+            existing = {c["name"] for c in inspector.get_columns(table)}
+            if column not in existing:
+                try:
+                    sync_conn.execute(
+                        text(f'ALTER TABLE {table} ADD COLUMN {column} {col_def}')
+                    )
+                    sync_conn.commit()
+                except Exception as exc:
+                    # Already exists (race) or not supported — ignore
+                    pass
+
+    await conn.run_sync(_migrate)
+
+
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await _run_migrations(conn)
     await seed_defaults()
 
 async def seed_defaults():

@@ -4,10 +4,11 @@ Scheduler — Manages background polling tasks for all devices
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, Set
-from core.snmp_engine import poll_device
+from typing import Dict, Set, Optional
+from core.snmp_engine import poll_device, ping_latency
 from core.alert_engine import evaluate_metrics, broadcast_ws
-from core.database import AsyncSessionLocal, Device, DeviceMetric, DeviceStatus
+from core.database import AsyncSessionLocal, Device, DeviceMetric, DeviceStatus, SystemSetting
+from core.sync_agent import sync_agent
 from sqlalchemy import select, delete
 
 logger = logging.getLogger(__name__)
@@ -18,6 +19,9 @@ class PollingScheduler:
         self._running = False
         self._tasks: Dict[int, asyncio.Task] = {}
         self._poll_intervals: Dict[int, int] = {}
+        # Previous bytes readings for bandwidth delta computation
+        # {device_id: {iface_index: {bytes_in, bytes_out, timestamp}}}
+        self._prev_bytes: Dict[int, Dict[int, Dict]] = {}
 
     async def start(self):
         self._running = True
@@ -31,6 +35,21 @@ class PollingScheduler:
             task.cancel()
         logger.info("Polling scheduler stopped")
 
+    async def _get_snmp_timeout(self) -> int:
+        """Read SNMP timeout from DB SystemSetting, fallback to config default."""
+        try:
+            async with AsyncSessionLocal() as session:
+                row = await session.execute(
+                    select(SystemSetting).where(SystemSetting.key == "snmp_timeout")
+                )
+                setting = row.scalar_one_or_none()
+                if setting and setting.value:
+                    return max(2, min(15, int(setting.value)))
+        except Exception:
+            pass
+        from core.config import settings
+        return settings.snmp_timeout
+
     async def _manage_poll_tasks(self):
         """Periodically sync polling tasks with DB device list."""
         while self._running:
@@ -40,29 +59,27 @@ class PollingScheduler:
                         select(Device).where(Device.is_active == True)
                     )
                     devices = result.scalars().all()
-                    
+
                     current_ids: Set[int] = set()
                     for device in devices:
                         current_ids.add(device.id)
                         interval = device.poll_interval or 300
-                        
-                        # Start new polling task if not already running
+
                         if device.id not in self._tasks or self._tasks[device.id].done():
                             self._poll_intervals[device.id] = interval
                             self._tasks[device.id] = asyncio.create_task(
                                 self._poll_device_loop(device.id, interval)
                             )
-                    
-                    # Cancel tasks for removed devices
+
                     for device_id in list(self._tasks.keys()):
                         if device_id not in current_ids:
                             self._tasks[device_id].cancel()
                             del self._tasks[device_id]
-                            
+
             except Exception as e:
                 logger.error(f"Scheduler manage error: {e}")
-            
-            await asyncio.sleep(60)  # Re-sync device list every minute
+
+            await asyncio.sleep(60)
 
     async def _poll_device_loop(self, device_id: int, interval: int):
         """Continuously poll a single device at its configured interval."""
@@ -76,7 +93,7 @@ class PollingScheduler:
             await asyncio.sleep(interval)
 
     async def _poll_once(self, device_id: int):
-        """Poll a device once and save results."""
+        """Poll a device once — SNMP + ping — and save results."""
         async with AsyncSessionLocal() as session:
             result = await session.execute(
                 select(Device).where(Device.id == device_id)
@@ -85,17 +102,82 @@ class PollingScheduler:
             if not device:
                 return
 
+            snmp_timeout = await self._get_snmp_timeout()
+
+            monitored_ifaces = []
+            if device.tags and "monitored_interfaces" in device.tags:
+                monitored_ifaces = device.tags["monitored_interfaces"]  # list of int indexes
+
             device_dict = {
                 "id": device.id,
                 "ip_address": device.ip_address,
                 "snmp_community": device.snmp_community,
                 "snmp_version": device.snmp_version.value if device.snmp_version else "v2c",
                 "device_type": device.device_type.value if device.device_type else "unknown",
+                "snmp_port": device.snmp_port or 161,
                 "name": device.name,
+                "snmp_timeout": snmp_timeout,
             }
 
-        # Poll (outside DB session to avoid holding connection)
+        # ── Ping for latency ────────────────────────────────────────────────
+        ping_ms: Optional[float] = await ping_latency(device_dict["ip_address"], timeout=2.0)
+
+        # ── SNMP poll ───────────────────────────────────────────────────────
         metrics = await poll_device(device_dict)
+
+        # ── Per-interface bandwidth delta ───────────────────────────────────
+        now = datetime.utcnow()
+        iface_metrics: Dict[int, Dict] = {}
+
+        raw_interfaces = metrics.get("interfaces", [])
+
+        # Track only what the user selected, or fall back to "up" interfaces only
+        # (avoids storing 30+ inactive Windows adapters on every poll)
+        if monitored_ifaces:
+            tracked = [i for i in raw_interfaces if i.get("index") in monitored_ifaces]
+        else:
+            tracked = [i for i in raw_interfaces if i.get("status") == "up"]
+        # Always include at least the first up interface even if no selection
+        if not tracked and raw_interfaces:
+            tracked = [raw_interfaces[0]]
+
+        for iface in tracked:
+            idx = iface.get("index")
+            if idx is None:
+                # Fallback: use position as index
+                try:
+                    idx = int(iface.get("name", "").lstrip("if") or 0)
+                except Exception:
+                    idx = raw_interfaces.index(iface) + 1
+
+            cur_in  = iface.get("bytes_in", 0) or 0
+            cur_out = iface.get("bytes_out", 0) or 0
+
+            in_mbps: Optional[float]  = None
+            out_mbps: Optional[float] = None
+
+            prev = self._prev_bytes.get(device_id, {}).get(idx)
+            if prev:
+                elapsed = (now - prev["ts"]).total_seconds()
+                if elapsed > 0 and cur_in >= prev["in"] and cur_out >= prev["out"]:
+                    in_mbps  = round((cur_in  - prev["in"])  / elapsed / 125_000, 3)
+                    out_mbps = round((cur_out - prev["out"]) / elapsed / 125_000, 3)
+
+            # Store for next cycle
+            if device_id not in self._prev_bytes:
+                self._prev_bytes[device_id] = {}
+            self._prev_bytes[device_id][idx] = {
+                "in": cur_in, "out": cur_out, "ts": now
+            }
+
+            iface_metrics[idx] = {
+                "name":     iface.get("name", f"if{idx}"),
+                "status":   iface.get("status", "unknown"),
+                "in_mbps":  in_mbps,
+                "out_mbps": out_mbps,
+                "bytes_in":  cur_in,
+                "bytes_out": cur_out,
+            }
 
         async with AsyncSessionLocal() as session:
             result = await session.execute(select(Device).where(Device.id == device_id))
@@ -108,7 +190,7 @@ class PollingScheduler:
             if new_status == "online":
                 device.status = DeviceStatus.online
                 device.consecutive_failures = 0
-                device.last_seen = datetime.utcnow()
+                device.last_seen = now
                 if metrics.get("uptime_seconds"):
                     device.uptime_seconds = metrics["uptime_seconds"]
             elif new_status == "offline":
@@ -118,7 +200,14 @@ class PollingScheduler:
                 elif device.consecutive_failures >= 1:
                     device.status = DeviceStatus.warning
 
-            device.last_polled = datetime.utcnow()
+            device.last_polled = now
+
+            # Build custom_metrics: ping + all interface data
+            custom: Dict = {}
+            if ping_ms is not None:
+                custom["ping_ms"] = ping_ms
+            if iface_metrics:
+                custom["interfaces"] = iface_metrics
 
             # Save metric snapshot
             metric_row = DeviceMetric(
@@ -130,30 +219,73 @@ class PollingScheduler:
                 noise_dbm=metrics.get("noise_dbm"),
                 ccq_percent=metrics.get("ccq_percent"),
                 toner_percent=metrics.get("toner_percent"),
-                custom_metrics=metrics.get("custom_metrics"),
+                custom_metrics=custom if custom else None,
             )
-            
-            # First interface bandwidth
-            if metrics.get("interfaces"):
-                iface = metrics["interfaces"][0]
-                metric_row.interface_name = iface.get("name")
-                metric_row.bytes_in = iface.get("bytes_in")
-                metric_row.bytes_out = iface.get("bytes_out")
+
+            # First monitored interface (or first available) → legacy bandwidth columns
+            target_ifaces = (
+                [iface_metrics[i] for i in sorted(monitored_ifaces) if i in iface_metrics]
+                or list(iface_metrics.values())
+            )
+            if target_ifaces:
+                primary = target_ifaces[0]
+                metric_row.interface_name = primary.get("name")
+                metric_row.bytes_in       = primary.get("bytes_in")
+                metric_row.bytes_out      = primary.get("bytes_out")
+                if primary.get("in_mbps") is not None:
+                    metric_row.bandwidth_in_mbps  = primary["in_mbps"]
+                    metric_row.bandwidth_out_mbps = primary["out_mbps"]
 
             session.add(metric_row)
 
-            # Evaluate thresholds and create alerts
             device_dict_for_eval = {"id": device.id, "name": device.name}
             await evaluate_metrics(device_dict_for_eval, metrics, session)
 
             await session.commit()
 
-        # Broadcast status update
+        # Broadcast update
         await broadcast_ws("device_update", {
             "device_id": device_id,
             "status": new_status,
+            "ping_ms": ping_ms,
             "metrics": {k: v for k, v in metrics.items() if k not in ("interfaces", "supplies")},
         })
+
+        # Queue for cloud sync (desktop mode only — sync_agent.enabled is False on server)
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(select(Device).where(Device.id == device_id))
+            dev = result.scalar_one_or_none()
+            if dev:
+                device_payload = {
+                    "name":           dev.name,
+                    "ip_address":     dev.ip_address,
+                    "device_type":    dev.device_type.value if dev.device_type else "unknown",
+                    "status":         new_status,
+                    "snmp_community": dev.snmp_community,
+                    "snmp_port":      dev.snmp_port,
+                    "sys_descr":      dev.sys_descr,
+                    "sys_name":       dev.sys_name,
+                    "sys_location":   dev.sys_location,
+                    "last_seen":      dev.last_seen.isoformat() if dev.last_seen else None,
+                    "uptime_seconds": metrics.get("uptime_seconds"),
+                    "poll_interval":  dev.poll_interval,
+                }
+                await sync_agent.queue_entity("device", device_id, "update", device_payload)
+
+        # Queue metric snapshot for sync
+        metric_payload = {
+            "ip_address":          device_dict.get("ip_address"),
+            "timestamp":           now.isoformat(),
+            "cpu_percent":         metrics.get("cpu_percent"),
+            "memory_percent":      metrics.get("memory_percent"),
+            "disk_percent":        metrics.get("disk_percent"),
+            "bandwidth_in_mbps":   metrics.get("bandwidth_in_mbps"),
+            "bandwidth_out_mbps":  metrics.get("bandwidth_out_mbps"),
+            "signal_dbm":          metrics.get("signal_dbm"),
+            "ccq_percent":         metrics.get("ccq_percent"),
+            "custom_metrics":      {**(custom if custom else {}), "ping_ms": ping_ms},
+        }
+        await sync_agent.queue_entity("metric", device_id, "create", metric_payload)
 
     async def _metrics_pruner(self):
         """Delete device_metrics rows older than 30 days. Runs once per day."""
@@ -170,7 +302,7 @@ class PollingScheduler:
                         logger.info(f"Metrics pruner: deleted {deleted} rows older than 30 days")
             except Exception as e:
                 logger.error(f"Metrics pruner error: {e}")
-            await asyncio.sleep(86400)  # run every 24 hours
+            await asyncio.sleep(86400)
 
     def force_poll(self, device_id: int):
         """Trigger an immediate poll for a device."""

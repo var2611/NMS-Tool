@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     sync_enabled: bool = Field(False, env="SYNC_ENABLED")
     sync_server_url: Optional[str] = Field(None, env="SYNC_SERVER_URL")
     sync_api_key: Optional[str] = Field(None, env="SYNC_API_KEY")
+    sync_site_name: str = Field("Desktop-Agent", env="SYNC_SITE_NAME")
     sync_interval_minutes: int = Field(5, env="SYNC_INTERVAL_MINUTES")
 
     # Notifications

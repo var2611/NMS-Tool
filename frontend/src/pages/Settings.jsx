@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import { settingsApi } from '../utils/api'
 import api from '../utils/api'
-import { Settings, Cloud, Mail, Lock, Wifi, CheckCircle, XCircle, RefreshCw } from 'lucide-react'
+import { Settings, Cloud, Mail, Lock, Wifi, CheckCircle, XCircle, RefreshCw, Globe, Monitor, Activity } from 'lucide-react'
+import { useStore } from '../store'
+import { TIMEZONE_LIST } from '../utils/timezone'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 
@@ -31,7 +33,37 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true)
 
   // Sync settings
-  const [sync, setSync] = useState({ server_url: '', api_key: '', interval_minutes: 5 })
+  const [sync, setSync] = useState({ server_url: '', api_key: '', site_name: '', interval_minutes: 5 })
+  const [syncSites, setSyncSites] = useState([])
+  const [loadingSites, setLoadingSites] = useState(false)
+  // Sync log
+  const [syncLog, setSyncLog] = useState([])
+  const [syncLogLoading, setSyncLogLoading] = useState(false)
+  const [failedQueue, setFailedQueue] = useState([])
+  const [retrying, setRetrying] = useState(false)
+
+  const loadSyncLog = async () => {
+    setSyncLogLoading(true)
+    try {
+      const [logRes, failedRes] = await Promise.all([
+        settingsApi.syncLog(20),
+        settingsApi.syncFailedQueue(),
+      ])
+      setSyncLog(logRes.data)
+      setFailedQueue(failedRes.data)
+    } catch { /* silent */ }
+    finally { setSyncLogLoading(false) }
+  }
+
+  const retryFailed = async () => {
+    setRetrying(true)
+    try {
+      const res = await settingsApi.syncRetryFailed()
+      toast.success(res.data.message)
+      await loadSyncLog()
+    } catch { toast.error('Retry failed') }
+    finally { setRetrying(false) }
+  }
   const [syncStatus, setSyncStatus] = useState(null)
   const [syncTesting, setSyncTesting] = useState(false)
 
@@ -44,6 +76,13 @@ export default function SettingsPage() {
   const [pwd, setPwd] = useState({ current_password: '', new_password: '', confirm: '' })
   const [pwdLoading, setPwdLoading] = useState(false)
 
+  // SNMP timeout
+  const [snmpTimeout, setSnmpTimeout] = useState(5)
+  const [snmpSaving, setSnmpSaving] = useState(false)
+
+  // Timezone (frontend display preference — stored in localStorage via Zustand)
+  const { timezone, setTimezone } = useStore()
+
   useEffect(() => {
     settingsApi.get().then(r => {
       setConfig(r.data)
@@ -51,6 +90,7 @@ export default function SettingsPage() {
         setSync(s => ({
           ...s,
           server_url: r.data.sync.server_url || '',
+          site_name: r.data.sync.site_name || '',
           interval_minutes: r.data.sync.interval_minutes || 5,
         }))
       }
@@ -62,8 +102,24 @@ export default function SettingsPage() {
           user: r.data.smtp.user || '',
         }))
       }
+      if (r.data.snmp?.timeout) {
+        setSnmpTimeout(r.data.snmp.timeout)
+      }
+      // Auto-load sync log in desktop mode
+      if (r.data.app?.mode === 'desktop') {
+        loadSyncLog()
+      }
     }).finally(() => setLoading(false))
   }, [])
+
+  const saveSnmpTimeout = async () => {
+    setSnmpSaving(true)
+    try {
+      await settingsApi.saveSnmp({ timeout: snmpTimeout })
+      toast.success(`SNMP timeout set to ${snmpTimeout}s`)
+    } catch { toast.error('Failed to save SNMP timeout') }
+    finally { setSnmpSaving(false) }
+  }
 
   const saveSync = async () => {
     try {
@@ -138,14 +194,28 @@ export default function SettingsPage() {
             </div>
           )}
           <div className="space-y-3">
-            <div><label className="label">Server URL</label>
+            <div>
+              <label className="label">
+                Site Name
+                <span className="text-xs text-gray-400 font-normal ml-2">Identifies this desktop in the cloud dashboard</span>
+              </label>
+              <input className="input" value={sync.site_name}
+                onChange={e => setSync(s => ({ ...s, site_name: e.target.value }))}
+                placeholder="e.g. Office-HQ, Branch-Mumbai, Home-Lab" />
+            </div>
+            <div><label className="label">Cloud Server URL</label>
               <input className="input" value={sync.server_url}
                 onChange={e => setSync(s => ({ ...s, server_url: e.target.value }))}
-                placeholder="https://nms.yourcompany.com" /></div>
-            <div><label className="label">API Key</label>
+                placeholder="http://localhost:8765  or  https://nms.yourcompany.com" /></div>
+            <div>
+              <label className="label">
+                Gateway API Key
+                <span className="text-xs text-gray-400 font-normal ml-2">Set in server .env as SYNC_API_KEY</span>
+              </label>
               <input className="input" type="password" value={sync.api_key}
                 onChange={e => setSync(s => ({ ...s, api_key: e.target.value }))}
-                placeholder="Site API key from server settings" /></div>
+                placeholder="Leave empty if server has no key set" />
+            </div>
             <div><label className="label">Sync every (minutes)</label>
               <input className="input w-32" type="number" min={1} max={60} value={sync.interval_minutes}
                 onChange={e => setSync(s => ({ ...s, interval_minutes: +e.target.value }))} /></div>
@@ -159,6 +229,170 @@ export default function SettingsPage() {
             </button>
             <StatusChip ok={syncStatus} label={syncStatus ? 'Connected' : 'Failed'} />
           </div>
+
+          {/* ── Sync Activity Log ── */}
+          <div className="mt-6 border-t border-gray-100 dark:border-gray-700 pt-5">
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 flex items-center gap-2">
+                <Activity size={14} className="text-teal-500" /> Sync Activity
+              </h4>
+              <div className="flex gap-2">
+                {failedQueue.length > 0 && (
+                  <button onClick={retryFailed} disabled={retrying}
+                    className="text-xs bg-red-50 text-red-600 dark:bg-red-900/20 dark:text-red-400 border border-red-200 dark:border-red-800 px-3 py-1 rounded-full flex items-center gap-1 hover:bg-red-100 transition-colors">
+                    <RefreshCw size={11} className={retrying ? 'animate-spin' : ''} />
+                    {retrying ? 'Retrying…' : `Retry ${failedQueue.length} failed`}
+                  </button>
+                )}
+                <button onClick={loadSyncLog} disabled={syncLogLoading}
+                  className="text-xs text-gray-500 hover:text-teal-600 flex items-center gap-1">
+                  <RefreshCw size={11} className={syncLogLoading ? 'animate-spin' : ''} />
+                  Refresh
+                </button>
+              </div>
+            </div>
+
+            {syncLog.length === 0 && !syncLogLoading ? (
+              <div className="text-center py-6 text-sm text-gray-400">
+                {sync.server_url
+                  ? 'No sync activity yet — first sync will run shortly after saving'
+                  : 'Configure the server URL above and save to start syncing'}
+              </div>
+            ) : (
+              <div className="space-y-1.5 max-h-72 overflow-y-auto">
+                {syncLog.map(entry => (
+                  <div key={entry.id}
+                    className={clsx(
+                      'flex items-start gap-3 p-2.5 rounded-lg text-xs border',
+                      entry.status === 'success' ? 'bg-green-50 border-green-100 dark:bg-green-900/10 dark:border-green-900/30' :
+                      entry.status === 'partial'  ? 'bg-amber-50 border-amber-100 dark:bg-amber-900/10 dark:border-amber-900/30' :
+                      entry.status === 'offline'  ? 'bg-gray-50 border-gray-200 dark:bg-gray-800 dark:border-gray-700' :
+                                                    'bg-red-50 border-red-100 dark:bg-red-900/10 dark:border-red-900/30'
+                    )}>
+                    {/* Status icon */}
+                    <span className="text-base flex-shrink-0 mt-0.5">
+                      {entry.status === 'success' ? '✓' :
+                       entry.status === 'partial'  ? '⚠' :
+                       entry.status === 'offline'  ? '⊘' : '✗'}
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {/* Timestamp in selected timezone */}
+                        <span className="font-mono text-gray-500 dark:text-gray-400">
+                          {new Intl.DateTimeFormat('en-GB', {
+                            timeZone: timezone,
+                            hour: '2-digit', minute: '2-digit', second: '2-digit',
+                            hour12: false,
+                          }).format(new Date(entry.timestamp + 'Z'))}
+                        </span>
+                        {/* Status badge */}
+                        <span className={clsx('font-semibold capitalize',
+                          entry.status === 'success' ? 'text-green-700 dark:text-green-400' :
+                          entry.status === 'partial'  ? 'text-amber-700 dark:text-amber-400' :
+                          entry.status === 'offline'  ? 'text-gray-500' :
+                                                        'text-red-700 dark:text-red-400')}>
+                          {entry.status}
+                        </span>
+                        {/* Counts */}
+                        {(entry.items_pushed > 0 || entry.items_failed > 0) && (
+                          <span className="text-gray-500">
+                            pushed:{entry.items_pushed}
+                            {entry.items_failed > 0 && (
+                              <span className="text-red-500 ml-1">failed:{entry.items_failed}</span>
+                            )}
+                            {entry.items_pending > 0 && (
+                              <span className="text-amber-500 ml-1">pending:{entry.items_pending}</span>
+                            )}
+                          </span>
+                        )}
+                        {/* Duration */}
+                        {entry.duration_ms != null && (
+                          <span className="text-gray-400">{entry.duration_ms}ms</span>
+                        )}
+                      </div>
+                      {/* Error message */}
+                      {entry.error && (
+                        <p className="mt-0.5 text-red-600 dark:text-red-400 truncate" title={entry.error}>
+                          {entry.error.length > 80 ? entry.error.slice(0, 80) + '…' : entry.error}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </Section>
+      )}
+
+      {/* Connected Sites — server mode only */}
+      {!isDesktop && (
+        <Section title="Connected Desktop Agents" icon={Monitor}>
+          <p className="text-sm text-gray-500 mb-4">
+            Desktop installations that are syncing data to this server.
+          </p>
+          <button
+            onClick={async () => {
+              setLoadingSites(true)
+              try { setSyncSites((await settingsApi.syncSites()).data) }
+              catch { toast.error('Could not load sites') }
+              finally { setLoadingSites(false) }
+            }}
+            className="btn-secondary text-sm flex items-center gap-2 mb-4"
+          >
+            <RefreshCw size={13} className={loadingSites ? 'animate-spin' : ''} />
+            {loadingSites ? 'Loading...' : 'Refresh'}
+          </button>
+          {syncSites.length === 0 ? (
+            <p className="text-sm text-gray-400 italic">No desktop agents connected yet.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-200 dark:border-gray-700 text-left text-xs text-gray-400 uppercase">
+                    <th className="pb-2 pr-4">Site Name</th>
+                    <th className="pb-2 pr-4">Status</th>
+                    <th className="pb-2 pr-4">Devices</th>
+                    <th className="pb-2 pr-4">Last Sync</th>
+                    <th className="pb-2">Version</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {syncSites.map(site => (
+                    <tr key={site.site_name} className="border-b border-gray-100 dark:border-gray-800">
+                      <td className="py-2 pr-4 font-medium text-gray-800 dark:text-gray-200">{site.site_name}</td>
+                      <td className="py-2 pr-4">
+                        <span className={clsx('inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full',
+                          site.status === 'online'  ? 'bg-green-100 text-green-700' :
+                          site.status === 'recent'  ? 'bg-amber-100 text-amber-700' :
+                                                      'bg-gray-100 text-gray-500')}>
+                          <span className={clsx('w-1.5 h-1.5 rounded-full',
+                            site.status === 'online' ? 'bg-green-500' :
+                            site.status === 'recent' ? 'bg-amber-400' : 'bg-gray-400')} />
+                          {site.status === 'online'  ? 'Online' :
+                           site.status === 'recent'  ? `${Math.round(site.last_seen_ago_secs / 60)}m ago` :
+                           'Offline'}
+                        </span>
+                      </td>
+                      <td className="py-2 pr-4 text-gray-600 dark:text-gray-400">{site.device_count}</td>
+                      <td className="py-2 pr-4 text-gray-500 text-xs font-mono">
+                        {site.last_sync
+                          ? (() => {
+                              const d = new Date(site.last_sync + 'Z')
+                              const diffMin = Math.round((Date.now() - d) / 60000)
+                              return diffMin < 60
+                                ? `${diffMin}m ago`
+                                : d.toLocaleString()
+                            })()
+                          : '—'}
+                      </td>
+                      <td className="py-2 text-gray-400 text-xs">{site.software_version || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </Section>
       )}
 
@@ -208,9 +442,9 @@ export default function SettingsPage() {
         </div>
       </Section>
 
-      {/* SNMP info */}
+      {/* SNMP Configuration */}
       <Section title="SNMP Configuration" icon={Wifi}>
-        <div className="space-y-2 text-sm text-gray-600 dark:text-gray-400">
+        <div className="space-y-2 text-sm text-gray-600 dark:text-gray-400 mb-5">
           <div className="flex justify-between py-2 border-b border-gray-100 dark:border-gray-700">
             <span>Trap listen port</span>
             <span className="font-mono font-semibold text-gray-800 dark:text-gray-200">{config?.snmp?.trap_port}</span>
@@ -219,14 +453,69 @@ export default function SettingsPage() {
             <span>Default community string</span>
             <span className="font-mono font-semibold text-gray-800 dark:text-gray-200">{config?.snmp?.default_community}</span>
           </div>
-          <div className="flex justify-between py-2">
-            <span>Poll timeout</span>
-            <span className="font-mono font-semibold text-gray-800 dark:text-gray-200">{config?.snmp?.timeout}s</span>
-          </div>
         </div>
-        <p className="text-xs text-gray-400 mt-3">
-          To change SNMP settings, edit the <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">.env</code> file and restart NMS-Tool.
+
+        {/* Editable: Poll timeout */}
+        <div>
+          <label className="label">
+            Poll timeout
+            <span className="text-xs text-gray-400 font-normal ml-2">
+              How long to wait for each SNMP response (2–15 seconds)
+            </span>
+          </label>
+          <div className="flex items-center gap-4 mt-2">
+            <input
+              type="range" min={2} max={15} step={1}
+              value={snmpTimeout}
+              onChange={e => setSnmpTimeout(Number(e.target.value))}
+              className="flex-1 accent-teal-500"
+            />
+            <span className="font-mono font-semibold text-gray-800 dark:text-gray-200 w-12 text-center">
+              {snmpTimeout}s
+            </span>
+            <button onClick={saveSnmpTimeout} disabled={snmpSaving} className="btn-primary text-sm px-4 py-1.5">
+              {snmpSaving ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+          <p className="text-xs text-gray-400 mt-2">
+            Lower = faster polls but more timeouts on slow devices. Higher = more reliable but slower detection.
+          </p>
+        </div>
+      </Section>
+
+      {/* Timezone */}
+      <Section title="Display Timezone" icon={Globe}>
+        <p className="text-sm text-gray-500 mb-4">
+          All timestamps are stored as <strong>UTC</strong> in the database.
+          Select your local timezone to display them correctly throughout the app.
         </p>
+        <div className="max-w-sm">
+          <label className="label">Timezone</label>
+          <select
+            className="input"
+            value={timezone}
+            onChange={e => {
+              setTimezone(e.target.value)
+              toast.success(`Timezone set to ${e.target.value}`)
+            }}
+          >
+            {TIMEZONE_LIST.map(group => (
+              <optgroup key={group.group} label={group.group}>
+                {group.options.map(tz => (
+                  <option key={tz.value} value={tz.value}>{tz.label}</option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+          <p className="text-xs text-gray-400 mt-2">
+            Current selection: <span className="font-mono font-medium text-gray-600 dark:text-gray-300">{timezone}</span>
+            {' · '}Current time: <span className="font-mono font-medium text-gray-600 dark:text-gray-300">
+              {new Intl.DateTimeFormat('en-GB', {
+                timeZone: timezone, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+              }).format(new Date())}
+            </span>
+          </p>
+        </div>
       </Section>
 
       {/* Password */}

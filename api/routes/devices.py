@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from core.database import get_db, Device, DeviceMetric, DeviceStatus, DeviceType, SnmpVersion
 from core.scheduler import scheduler
+from core.snmp_engine import list_device_interfaces
 
 router = APIRouter()
 
@@ -58,6 +59,11 @@ class DeviceOut(BaseModel):
     is_active: bool
     auto_discovered: bool
     created_at: datetime
+    # Origin
+    source: Optional[str] = "manual"
+    site_name: Optional[str] = None
+    sync_status: Optional[str] = None
+    synced_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -135,10 +141,24 @@ async def create_device(data: DeviceCreate, db: AsyncSession = Depends(get_db)):
     if existing.scalar_one_or_none():
         raise HTTPException(400, f"Device with IP {data.ip_address} already exists")
     
-    device = Device(**data.model_dump())
+    device = Device(**data.model_dump(), source="manual")
     db.add(device)
     await db.commit()
     await db.refresh(device)
+
+    # Queue for cloud sync
+    from core.sync_agent import sync_agent
+    await sync_agent.queue_entity("device", device.id, "create", {
+        "name":           device.name,
+        "ip_address":     device.ip_address,
+        "device_type":    device.device_type.value if device.device_type else "unknown",
+        "status":         "unknown",
+        "snmp_community": device.snmp_community,
+        "snmp_port":      device.snmp_port,
+        "poll_interval":  device.poll_interval,
+        "notes":          device.notes,
+    })
+
     return device
 
 
@@ -207,6 +227,55 @@ async def get_metrics(
             "signal_dbm": m.signal_dbm,
             "ccq_percent": m.ccq_percent,
             "toner_percent": m.toner_percent,
+            # custom_metrics carries ping_ms and per-interface bandwidth
+            "ping_ms": (m.custom_metrics or {}).get("ping_ms"),
+            "interfaces": (m.custom_metrics or {}).get("interfaces", {}),
         }
         for m in metrics
     ]
+
+
+# ─── Interface management ─────────────────────────────────────────────────────
+
+class MonitoredInterfacesRequest(BaseModel):
+    indexes: List[int]  # interface indexes to monitor
+
+
+@router.get("/{device_id}/interfaces")
+async def get_device_interfaces(device_id: int, db: AsyncSession = Depends(get_db)):
+    """Fetch all interfaces from device via live SNMP + return which are monitored."""
+    result = await db.execute(select(Device).where(Device.id == device_id))
+    device = result.scalar_one_or_none()
+    if not device:
+        raise HTTPException(404, "Device not found")
+
+    try:
+        interfaces = await list_device_interfaces(
+            device.ip_address,
+            device.snmp_community or "public",
+            device.snmp_version.value if device.snmp_version else "v2c",
+            device.snmp_port or 161,
+        )
+    except Exception as e:
+        raise HTTPException(503, f"SNMP query failed: {e}")
+
+    monitored = (device.tags or {}).get("monitored_interfaces", [])
+    return {"interfaces": interfaces, "monitored": monitored}
+
+
+@router.post("/{device_id}/interfaces")
+async def set_monitored_interfaces(
+    device_id: int,
+    data: MonitoredInterfacesRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Save which interface indexes to monitor for bandwidth."""
+    result = await db.execute(select(Device).where(Device.id == device_id))
+    device = result.scalar_one_or_none()
+    if not device:
+        raise HTTPException(404, "Device not found")
+
+    device.tags = {**(device.tags or {}), "monitored_interfaces": data.indexes}
+    device.updated_at = datetime.utcnow()
+    await db.commit()
+    return {"monitored": data.indexes}

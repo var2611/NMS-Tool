@@ -131,6 +131,7 @@ async def save_discovered_devices(
             sys_location=device_data.get("sys_location"),
             sys_contact=device_data.get("sys_contact"),
             auto_discovered=True,
+            source="discovery",
         )
         db.add(device)
         saved.append(ip)

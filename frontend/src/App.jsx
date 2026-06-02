@@ -28,6 +28,7 @@ import { useWebSocket } from './hooks/useWebSocket'
 import Layout from './components/Layout'
 import Dashboard from './pages/Dashboard'
 import Devices from './pages/Devices'
+import DeviceDetail from './pages/DeviceDetail'
 import Discovery from './pages/Discovery'
 import Traps from './pages/Traps'
 import Alerts from './pages/Alerts'
@@ -49,6 +50,7 @@ function AppInner() {
       <Routes>
         <Route path="/" element={<Dashboard />} />
         <Route path="/devices" element={<Devices />} />
+        <Route path="/devices/:id" element={<DeviceDetail />} />
         <Route path="/discovery" element={<Discovery />} />
         <Route path="/traps" element={<Traps />} />
         <Route path="/alerts" element={<Alerts />} />

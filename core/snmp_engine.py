@@ -173,10 +173,12 @@ async def snmp_walk(ip: str, base_oid: str, community: str = "public",
         # var_binds in pysnmp 6.x is a list of lists: [[ObjectType, ...]]
         row = var_binds[0] if var_binds and isinstance(var_binds[0], list) else var_binds
         advanced = False
+        # Build the subtree prefix once: "1.3.6.1.2.1.2.2.1.2" → must match "1.3.6.1.2.1.2.2.1.2."
+        subtree_prefix = base_oid.rstrip('.') + '.'
         for var_bind in row:
             oid_str = str(var_bind[0])
             # Stop if we've walked outside the requested subtree
-            if not oid_str.startswith(base_oid.split('.')[0]):
+            if not oid_str.startswith(subtree_prefix):
                 return results
             # Also stop if OID didn't advance (avoid infinite loop)
             if oid_str == current_oid:
@@ -359,24 +361,26 @@ async def poll_device(device: Dict) -> Dict:
         storage_used = await snmp_walk(ip, STANDARD_OIDS["hrStorageUsed"], community=community, max_rows=10)
         storage_size = await snmp_walk(ip, STANDARD_OIDS["hrStorageSize"], community=community, max_rows=10)
 
-        for oid, descr in storage_descr.items():
+        for oid, raw_descr in storage_descr.items():
             idx = oid.split(".")[-1]
+            descr = _decode_snmp_string(raw_descr, raw_descr).lower()
             used_oid = f"1.3.6.1.2.1.25.2.3.1.6.{idx}"
             size_oid = f"1.3.6.1.2.1.25.2.3.1.5.{idx}"
             used = int(storage_used.get(used_oid, 0) or 0)
             size = int(storage_size.get(size_oid, 1) or 1)
             if size > 0:
                 pct = round((used / size) * 100, 1)
-                if "ram" in descr.lower() or "memory" in descr.lower() or "physical" in descr.lower():
+                if "ram" in descr or "memory" in descr or "physical" in descr:
                     metrics["memory_percent"] = pct
-                elif "disk" in descr.lower() or "/" == descr.strip() or "c:" in descr.lower():
+                elif "disk" in descr or descr.strip() == "/" or "c:" in descr or "d:" in descr:
                     metrics["disk_percent"] = pct
 
-        # Interface bandwidth
-        if_status = await snmp_walk(ip, STANDARD_OIDS["ifOperStatus"], community=community, max_rows=5)
-        if_in = await snmp_walk(ip, STANDARD_OIDS["ifInOctets"], community=community, max_rows=5)
-        if_out = await snmp_walk(ip, STANDARD_OIDS["ifOutOctets"], community=community, max_rows=5)
-        if_descr = await snmp_walk(ip, STANDARD_OIDS["ifDescr"], community=community, max_rows=5)
+        # Interface bandwidth — walk up to 64 interfaces so user-selected high-index
+        # adapters (e.g. Intel Ethernet at index 16+) are always captured
+        if_status = await snmp_walk(ip, STANDARD_OIDS["ifOperStatus"], community=community, max_rows=64)
+        if_in    = await snmp_walk(ip, STANDARD_OIDS["ifInOctets"],    community=community, max_rows=64)
+        if_out   = await snmp_walk(ip, STANDARD_OIDS["ifOutOctets"],   community=community, max_rows=64)
+        if_descr = await snmp_walk(ip, STANDARD_OIDS["ifDescr"],       community=community, max_rows=64)
 
         interfaces = []
         for oid, status in if_status.items():
@@ -384,8 +388,10 @@ async def poll_device(device: Dict) -> Dict:
             descr_oid = f"1.3.6.1.2.1.2.2.1.2.{idx}"
             in_oid = f"1.3.6.1.2.1.2.2.1.10.{idx}"
             out_oid = f"1.3.6.1.2.1.2.2.1.16.{idx}"
+            raw_name = if_descr.get(descr_oid, f"if{idx}")
             interfaces.append({
-                "name": if_descr.get(descr_oid, f"if{idx}"),
+                "index": int(idx),
+                "name": _decode_snmp_string(raw_name, f"if{idx}"),  # decode hex names
                 "status": "up" if status == "1" else "down",
                 "bytes_in": int(if_in.get(in_oid, 0) or 0),
                 "bytes_out": int(if_out.get(out_oid, 0) or 0),
@@ -446,6 +452,87 @@ async def poll_device(device: Dict) -> Dict:
     except Exception as e:
         logger.error(f"Error polling {ip}: {e}")
         return {**metrics, "status": "offline", "error": str(e)}
+
+
+# ─── Ping with latency ────────────────────────────────────────────────────────
+
+async def ping_latency(ip: str, timeout: float = 2.0) -> Optional[float]:
+    """Ping a host and return round-trip latency in milliseconds, or None if unreachable."""
+    import platform
+    import re as _re
+    system = platform.system().lower()
+    if system == "windows":
+        cmd = ["ping", "-n", "1", "-w", str(int(timeout * 1000)), ip]
+    else:
+        cmd = ["ping", "-c", "1", "-W", str(int(max(1, timeout))), ip]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout + 2)
+        if proc.returncode == 0:
+            output = stdout.decode()
+            m = _re.search(r'time[=<](\d+\.?\d*)\s*ms', output, _re.IGNORECASE)
+            if m:
+                return round(float(m.group(1)), 2)
+            # fallback: any number before ms
+            m = _re.search(r'(\d+\.?\d+)\s*ms', output)
+            if m:
+                return round(float(m.group(1)), 2)
+        return None
+    except Exception:
+        return None
+
+
+# ─── Interface discovery ──────────────────────────────────────────────────────
+
+def _decode_snmp_string(val: str, fallback: str = "") -> str:
+    """Convert pysnmp OctetString hex (0x...) to a readable ASCII/UTF-8 string."""
+    if not val:
+        return fallback
+    if val.startswith("0x"):
+        try:
+            raw = bytes.fromhex(val[2:])
+            return raw.decode("utf-8").strip("\x00").strip() or fallback
+        except Exception:
+            try:
+                return raw.decode("latin-1").strip("\x00").strip() or fallback
+            except Exception:
+                return fallback
+    return val.strip() or fallback
+
+
+async def list_device_interfaces(
+    ip: str,
+    community: str = "public",
+    version: str = "v2c",
+    port: int = 161,
+    timeout: int = 5,
+) -> List[Dict]:
+    """Return all interfaces from a device via SNMP (index, name, status, speed)."""
+    if_descr   = await snmp_walk(ip, STANDARD_OIDS["ifDescr"],    community, version, port, timeout, max_rows=64)
+    if_status  = await snmp_walk(ip, STANDARD_OIDS["ifOperStatus"], community, version, port, timeout, max_rows=64)
+    if_speed   = await snmp_walk(ip, "1.3.6.1.2.1.2.2.1.5",       community, version, port, timeout, max_rows=64)
+    if_in      = await snmp_walk(ip, STANDARD_OIDS["ifInOctets"],  community, version, port, timeout, max_rows=64)
+    if_out     = await snmp_walk(ip, STANDARD_OIDS["ifOutOctets"], community, version, port, timeout, max_rows=64)
+
+    interfaces = []
+    for oid, raw_name in if_descr.items():
+        idx = oid.split(".")[-1]
+        speed_raw = int(if_speed.get(f"1.3.6.1.2.1.2.2.1.5.{idx}", 0) or 0)
+        name = _decode_snmp_string(raw_name, f"if{idx}")
+        interfaces.append({
+            "index": int(idx),
+            "name": name,
+            "status": "up" if if_status.get(f"1.3.6.1.2.1.2.2.1.8.{idx}", "2") == "1" else "down",
+            "speed_mbps": round(speed_raw / 1_000_000, 1),
+            "bytes_in":  int(if_in.get(f"1.3.6.1.2.1.2.2.1.10.{idx}", 0) or 0),
+            "bytes_out": int(if_out.get(f"1.3.6.1.2.1.2.2.1.16.{idx}", 0) or 0),
+        })
+
+    return sorted(interfaces, key=lambda x: x["index"])
 
 
 # ─── Trap Listener ────────────────────────────────────────────────────────────
