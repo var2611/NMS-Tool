@@ -1,0 +1,31 @@
+# SentinelNMS — frp client config
+# Routes public traffic from your relay server to this Docker stack.
+#
+# Server:  13.207.180.88 (your relay server, running frps)
+# Access:  http://13.207.180.88:18765  →  nms-nginx:80  (web UI + API)
+#          udp://13.207.180.88:16200   →  nms-api:162   (SNMP traps)
+
+serverAddr = "13.207.180.88"
+serverPort = 7800
+
+auth.method = "token"
+auth.token  = "d77e924378c0ed71ad2ab1773511d138"
+
+log.to      = "/dev/stdout"
+log.level   = "info"
+
+# ── NMS web UI + API + WebSocket ──────────────────────────────────────────
+[[proxies]]
+name       = "nms-web"
+type       = "tcp"
+localIP    = "nms-api"     # FastAPI serves web UI + API directly on 8765
+localPort  = 8765
+remotePort = 18765
+
+# ── SNMP trap receiver ────────────────────────────────────────────────────
+[[proxies]]
+name       = "nms-snmp"
+type       = "udp"
+localIP    = "nms-api"     # API container receives traps on port 162
+localPort  = 162
+remotePort = 16200

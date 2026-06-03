@@ -55,6 +55,26 @@ services:
     cap_add:
       - NET_BIND_SERVICE  # allows binding port 162 without root
 
+  # ─── frp Tunnel Client ───────────────────────────────────────────────
+  # Exposes NMS to the internet via your relay server (13.207.180.88).
+  # Access: http://13.207.180.88:18765
+  #
+  # Control:
+  #   docker compose stop   frpc-tunnel   ← take offline
+  #   docker compose start  frpc-tunnel   ← bring back
+  #   docker compose rm -f  frpc-tunnel   ← remove completely
+  frpc-tunnel:
+    image: snowdreamtech/frpc:0.61.1
+    container_name: nms-frpc-tunnel
+    restart: unless-stopped
+    volumes:
+      - ./frpc.toml:/etc/frp/frpc.toml:ro
+    networks:
+      - nms-network
+    depends_on:
+      - nms-api
+      - nginx
+
   # ─── Nginx Reverse Proxy ──────────────────────────────────────────────
   nginx:
     image: nginx:alpine
