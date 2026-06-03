@@ -1,6 +1,6 @@
 {
   "name": "sentinelnms-desktop",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "SentinelNMS \u2014 Network Management System by Nav Wireless Technologies",
   "main": "desktop/main.js",
   "author": {
@@ -43,8 +43,7 @@
       "requirements.txt",
       ".env.example",
       "!**/__pycache__",
-      "!**/*.pyc",
-      "!node_modules"
+      "!**/*.pyc"
     ],
     "extraResources": [
       {
