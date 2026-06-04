@@ -6,7 +6,7 @@ from datetime import datetime
 
 from core.database import get_db, MibFile
 from core.mib_parser import save_mib_file, search_oids, get_all_oids, resolve_oid
-from core.snmp_engine import snmp_get
+from core.snmp_engine import snmp_get, snmp_walk
 
 router = APIRouter()
 
@@ -124,3 +124,30 @@ async def test_oid(body: dict):
             "description": oid_info.get("description", ""),
         }
     return {"success": False, "error": "No response from device — check IP and community string"}
+
+
+@router.post("/walk-oid")
+async def walk_oid(body: dict):
+    """Walk an OID subtree on a device — returns all child OIDs and values."""
+    ip        = body.get("ip")
+    oid       = body.get("oid")
+    community = body.get("community", "public")
+    max_rows  = int(body.get("max_rows", 50))
+
+    if not ip or not oid:
+        raise HTTPException(400, "ip and oid are required")
+
+    results = await snmp_walk(ip, oid, community=community, max_rows=max_rows)
+
+    if results:
+        rows = []
+        for full_oid, value in results.items():
+            info = resolve_oid(full_oid)
+            rows.append({
+                "oid":         full_oid,
+                "name":        info.get("name", full_oid),
+                "value":       value,
+                "description": info.get("description", ""),
+            })
+        return {"success": True, "oid": oid, "count": len(rows), "results": rows}
+    return {"success": False, "error": "No data returned — OID may not exist or device unreachable"}

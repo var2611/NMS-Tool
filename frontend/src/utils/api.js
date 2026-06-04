@@ -66,7 +66,8 @@ export const mibsApi = {
   delete: (id) => api.delete(`/mibs/${id}`),
   search: (q) => api.get('/mibs/search', { params: { q } }),
   resolve: (oid) => api.get(`/mibs/resolve/${oid}`),
-  testOid: (data) => api.post('/mibs/test-oid', data),
+  testOid:  (data) => api.post('/mibs/test-oid',  data),
+  walkOid:  (data) => api.post('/mibs/walk-oid',  data),
 }
 
 export const reportsApi = {
