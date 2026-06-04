@@ -5,7 +5,7 @@ import { useStore } from '../store'
 import { formatTs, chartLabel } from '../utils/timezone'
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, Legend
+  ResponsiveContainer, Legend, ReferenceLine
 } from 'recharts'
 import { ArrowLeft, Radio, Trash2, Wifi, ChevronDown, ChevronUp, RefreshCw } from 'lucide-react'
 import toast from 'react-hot-toast'
@@ -22,7 +22,9 @@ const STATUS_BADGE = {
 
 // ─── Metric chart ─────────────────────────────────────────────────────────────
 
-function MetricChart({ title, data, dataKeys, colors, unit = '', height = 120 }) {
+function MetricChart({ title, data, dataKeys, colors, unit = '', height = 120, hours = 24 }) {
+  const { theme, timezone } = useStore()
+
   const hasData = data.some(d => dataKeys.some(k => d[k] != null))
   if (!hasData) return (
     <div className="card p-4">
@@ -30,27 +32,107 @@ function MetricChart({ title, data, dataKeys, colors, unit = '', height = 120 })
       <p className="text-xs text-gray-400 italic h-8 flex items-center">No data yet — waiting for next poll</p>
     </div>
   )
+
+  // Read dark mode from the DOM class — always accurate regardless of store timing.
+  // Recharts renders tooltip AFTER hover so it must use the live DOM state,
+  // not a potentially-stale Zustand value.
+  const isDark = document.documentElement.classList.contains('dark')
+  const tickColor     = isDark ? '#9ca3af' : '#6b7280'
+  const gridColor     = isDark ? '#374151' : '#e5e7eb'
+  const tooltipBg     = isDark ? '#1e293b' : '#ffffff'
+  const tooltipBorder = isDark ? '#334155' : '#e5e7eb'
+  const tooltipLabel  = isDark ? '#f1f5f9' : '#111827'   // always high-contrast on tooltip bg
+
+  // ── Numeric time domain (the correct Recharts approach for time axes)
+  // Explicit ms domain guarantees the axis ALWAYS spans now−Xh → now,
+  // even when data only covers part of that window.
+  const nowMs         = Date.now()
+  const windowStartMs = nowMs - hours * 3_600_000
+  const domain        = [windowStartMs, nowMs]
+
+  // 7 evenly-spaced tick marks spanning the full window (always includes start + end)
+  const TICK_COUNT = 7
+  const tickStep   = (nowMs - windowStartMs) / (TICK_COUNT - 1)
+  const ticks      = Array.from({ length: TICK_COUNT }, (_, i) =>
+    Math.round(windowStartMs + i * tickStep)
+  )
+
+  // X-axis formatter: HH:MM for ≤6h, "3 Jun 14:30" for longer (clear + compact)
+  const fmtTick = (ms) => {
+    if (!ms) return ''
+    const d    = new Date(ms)
+    const opts = { timeZone: timezone, hour12: false }
+    return hours <= 6
+      ? new Intl.DateTimeFormat('en-GB', { ...opts, hour: '2-digit', minute: '2-digit' }).format(d)
+      : new Intl.DateTimeFormat('en-GB', { ...opts, day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).format(d)
+  }
+
+  // Tooltip timestamp — full readable datetime in user's timezone
+  const fmtTooltipLabel = (ms) => {
+    if (!ms) return ''
+    return new Intl.DateTimeFormat('en-GB', {
+      timeZone: timezone, hour12: false,
+      weekday: 'short', day: '2-digit', month: 'short',
+      hour: '2-digit', minute: '2-digit'
+    }).format(new Date(ms))
+  }
+
   return (
     <div className="card p-4">
       <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 mb-3">{title}</p>
       <ResponsiveContainer width="100%" height={height}>
-        <LineChart data={data} margin={{ top: 4, right: 8, left: -16, bottom: 0 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" strokeOpacity={0.5} />
-          <XAxis dataKey="label" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
+        <LineChart data={data} margin={{ top: 4, right: 10, left: 4, bottom: 4 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke={gridColor} strokeOpacity={0.6} />
+          <XAxis
+            dataKey="ts"
+            type="number"
+            scale="time"
+            domain={domain}
+            ticks={ticks}
+            tickFormatter={fmtTick}
+            tick={{ fontSize: 9, fill: tickColor }}
+            tickLine={{ stroke: tickColor }}
+            axisLine={{ stroke: gridColor }}
+            padding={{ left: 8, right: 8 }}
+          />
           <YAxis
-            tick={{ fontSize: 10 }}
-            width={44}
+            tick={{ fontSize: 10, fill: tickColor }}
+            tickLine={{ stroke: tickColor }}
+            axisLine={{ stroke: gridColor }}
+            width={42}
             tickFormatter={v => v != null ? `${v}${unit}` : ''}
             domain={[0, 'auto']}
             allowDataOverflow={false}
           />
           <Tooltip
-            formatter={(v, name) => [v != null ? `${v}${unit}` : 'N/A', name]}
-            labelStyle={{ fontSize: 11 }}
-            contentStyle={{ fontSize: 11 }}
+            cursor={{ stroke: tickColor, strokeWidth: 1, strokeDasharray: '4 2' }}
+            content={({ active, payload, label }) => {
+              if (!active || !payload?.length) return null
+              const dk     = document.documentElement.classList.contains('dark')
+              const bg     = dk ? '#1e293b' : '#ffffff'
+              const border = dk ? '#334155' : '#e2e8f0'
+              const lc     = dk ? '#f1f5f9' : '#0f172a'
+              return (
+                <div style={{
+                  background: bg, border: `1px solid ${border}`,
+                  borderRadius: 7, padding: '7px 11px',
+                  boxShadow: dk ? '0 4px 14px rgba(0,0,0,0.5)' : '0 4px 14px rgba(0,0,0,0.1)',
+                  fontSize: 11, minWidth: 140,
+                }}>
+                  <p style={{ color: lc, fontWeight: 700, marginBottom: 4 }}>
+                    {fmtTooltipLabel(label)}
+                  </p>
+                  {payload.map((entry, i) => (
+                    <p key={i} style={{ color: entry.color, margin: '2px 0' }}>
+                      {entry.name}: {entry.value != null ? `${entry.value}${unit}` : 'N/A'}
+                    </p>
+                  ))}
+                </div>
+              )
+            }}
           />
           {dataKeys.length > 1 && (
-            <Legend iconSize={8} wrapperStyle={{ fontSize: 10, paddingTop: 4 }} />
+            <Legend iconSize={8} wrapperStyle={{ fontSize: 10, paddingTop: 4, color: tickColor }} />
           )}
           {dataKeys.map((k, i) => (
             <Line
@@ -184,7 +266,7 @@ export default function DeviceDetail() {
   const [device, setDevice] = useState(null)
   const [metrics, setMetrics] = useState([])
   const [loading, setLoading] = useState(true)
-  const [hours, setHours] = useState(24)
+  const [hours, setHours] = useState(3)   // default 3h — smallest useful window, fastest load
 
   const loadDevice = useCallback(async () => {
     try {
@@ -199,10 +281,28 @@ export default function DeviceDetail() {
   const loadMetrics = useCallback(async (h = hours) => {
     try {
       const res = await devicesApi.metrics(id, h)
-      setMetrics(res.data.map(m => ({
+      // ts = numeric ms timestamp — used by XAxis type="number" scale="time"
+      // This lets Recharts set an exact domain and place ticks anywhere in the window
+      const toMs = (iso) => {
+        const utc = iso.endsWith('Z') || iso.includes('+') ? iso : iso + 'Z'
+        return new Date(utc).getTime()
+      }
+
+      const rows = res.data.map(m => ({
         ...m,
+        ts:    toMs(m.timestamp),
         label: chartLabel(m.timestamp, timezone),
-      })))
+      }))
+
+      // Sentinel points anchor the X-axis to the full selected window (now−h → now).
+      // Without them, if the device was offline for hours, the axis only spans
+      // the actual data range (e.g., "12:35–20:56 yesterday") instead of the
+      // expected "12:08 yesterday – 12:08 today".
+      const nowMs2       = Date.now()
+      const startMs2     = nowMs2 - h * 3_600_000
+      const sentinel = (ms) => ({ ts: ms, timestamp: new Date(ms).toISOString() })
+
+      setMetrics([sentinel(startMs2), ...rows, sentinel(nowMs2)])
     } catch { setMetrics([]) }
   }, [id, hours, timezone])
 
@@ -210,10 +310,19 @@ export default function DeviceDetail() {
     Promise.all([loadDevice(), loadMetrics()]).finally(() => setLoading(false))
   }, [id])
 
-  // Re-label chart data when timezone changes
+  // Re-label when timezone changes (label is display-only, ts/domain stay numeric)
   useEffect(() => {
-    setMetrics(prev => prev.map(m => ({ ...m, label: chartLabel(m.timestamp, timezone) })))
+    setMetrics(prev => prev.map(m => ({
+      ...m,
+      label: m.timestamp ? chartLabel(m.timestamp, timezone) : m.label,
+    })))
   }, [timezone])
+
+  // Re-run loadMetrics when hours selector changes (re-anchors the window too)
+  const handleHoursChange = (h) => {
+    setHours(h)
+    loadMetrics(h)
+  }
 
   const pollNow = async () => {
     await devicesApi.poll(id)
@@ -243,7 +352,9 @@ export default function DeviceDetail() {
     metrics
       .filter(m => m.interfaces?.[idx] != null)
       .map(m => ({
-        label: m.label,
+        ts:         m.ts,
+        timestamp:  m.timestamp,
+        label:      m.label,
         'In Mbps':  m.interfaces[idx]?.in_mbps  ?? null,
         'Out Mbps': m.interfaces[idx]?.out_mbps ?? null,
       }))
@@ -301,7 +412,7 @@ export default function DeviceDetail() {
         <div className="flex gap-2 flex-shrink-0">
           <select
             value={hours}
-            onChange={e => { setHours(+e.target.value); loadMetrics(+e.target.value) }}
+            onChange={e => handleHoursChange(+e.target.value)}
             className="input text-sm py-1.5 w-32"
           >
             <option value={3}>Last 3h</option>
@@ -344,7 +455,7 @@ export default function DeviceDetail() {
           data={metrics}
           dataKeys={['cpu_percent']}
           colors={['#14b8a6']}
-          unit="%"
+          unit="%" hours={hours}
         />
 
         <MetricChart
@@ -352,7 +463,7 @@ export default function DeviceDetail() {
           data={metrics}
           dataKeys={['memory_percent', 'disk_percent']}
           colors={['#6366f1', '#f59e0b']}
-          unit="%"
+          unit="%" hours={hours}
         />
 
         <MetricChart
@@ -360,7 +471,7 @@ export default function DeviceDetail() {
           data={metrics}
           dataKeys={['ping_ms']}
           colors={['#ec4899']}
-          unit=" ms"
+          unit=" ms" hours={hours}
         />
 
         {/* Bandwidth charts — one per monitored (or stored) interface */}
@@ -383,7 +494,7 @@ export default function DeviceDetail() {
                     data={data}
                     dataKeys={['In Mbps', 'Out Mbps']}
                     colors={['#3b82f6', '#10b981']}
-                    unit=" Mbps"
+                    unit=" Mbps" hours={hours}
                   />
                 ) : (
                   <div className="card p-4">
@@ -406,7 +517,7 @@ export default function DeviceDetail() {
             data={metrics}
             dataKeys={['signal_dbm', 'noise_dbm']}
             colors={['#8b5cf6', '#6b7280']}
-            unit=" dBm"
+            unit=" dBm" hours={hours}
           />
         )}
       </div>

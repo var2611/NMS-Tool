@@ -204,15 +204,21 @@ async def get_metrics(
     hours: int = Query(24, le=168),
     db: AsyncSession = Depends(get_db)
 ):
-    """Get metric history for a device."""
+    """Get ALL metric records in the selected window, oldest-first for charting.
+
+    No arbitrary row limit — the chart must show every data point the device
+    reported. At 1-min polling the volumes are:
+        3h  → ~180 rows    6h  → ~360     24h → ~1440
+        3d  → ~4320        7d  → ~10080
+    All are fast for PostgreSQL/SQLite with the (device_id, timestamp) index.
+    """
     from datetime import timedelta
     since = datetime.utcnow() - timedelta(hours=hours)
-    
+
     result = await db.execute(
         select(DeviceMetric)
         .where(DeviceMetric.device_id == device_id, DeviceMetric.timestamp >= since)
-        .order_by(DeviceMetric.timestamp)
-        .limit(500)
+        .order_by(DeviceMetric.timestamp)          # oldest first → chart left-to-right
     )
     metrics = result.scalars().all()
     
