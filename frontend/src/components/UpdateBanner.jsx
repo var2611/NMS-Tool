@@ -1,157 +1,261 @@
-import { useEffect, useState } from 'react'
-import { Download, RefreshCw, X, AlertTriangle } from 'lucide-react'
+import { useEffect, useState, useCallback } from 'react'
+import { Download, RefreshCw, X, ExternalLink, CheckCircle, AlertTriangle, Loader } from 'lucide-react'
 import clsx from 'clsx'
 
 /**
- * UpdateBanner — shown inside the Electron desktop app when a new version is available.
- * Communicates with main.js via window.electronAPI (preload bridge).
- * In the web version (no electronAPI) this component renders nothing.
+ * UpdateBanner
+ *
+ * Renders a prominent top-bar inside the Electron desktop app when a
+ * software update is available. Web visitors (no window.electronAPI) see nothing.
+ *
+ * Full lifecycle:
+ *   idle → checking → available → downloading → ready → installing → (app restarts)
+ *
+ * Windows:  full silent download + install + auto-restart
+ * macOS:    download + install (requires signed build; fallback opens GitHub)
+ * Linux:    shows link to GitHub releases page
  */
+
+const PHASES = {
+  IDLE:        'idle',
+  CHECKING:    'checking',
+  AVAILABLE:   'available',
+  DOWNLOADING: 'downloading',
+  READY:       'ready',
+  INSTALLING:  'installing',
+  ERROR:       'error',
+  UP_TO_DATE:  'up_to_date',
+}
+
 export default function UpdateBanner() {
   const api = window.electronAPI
+  const [phase, setPhase]       = useState(PHASES.IDLE)
+  const [info, setInfo]         = useState({})   // { version, releaseDate }
+  const [progress, setProgress] = useState(0)    // 0-100
+  const [speed, setSpeed]       = useState(0)    // bytes/sec
+  const [error, setError]       = useState('')
+  const [dismissed, setDismiss] = useState(false)
 
-  const [state, setState] = useState(null)
-  // state shape:
-  //   { phase: 'available', version, releaseDate }
-  //   { phase: 'downloading', percent, bytesPerSecond }
-  //   { phase: 'ready', version }
-  //   { phase: 'error', message }
-
+  // ── Wire up IPC events ──────────────────────────────────────────────────
   useEffect(() => {
-    // Only wire up in Electron
     if (!api?.onUpdateAvailable) return
 
-    api.onUpdateAvailable(info => {
-      setState({ phase: 'available', version: info.version, releaseDate: info.releaseDate })
+    api.onUpdateAvailable(i => {
+      setInfo(i)
+      setPhase(PHASES.AVAILABLE)
+      setDismiss(false)
     })
-    api.onDownloadProgress(info => {
-      setState(s => ({ ...s, phase: 'downloading', percent: Math.round(info.percent), bytesPerSecond: info.bytesPerSecond }))
+    api.onDownloadProgress(i => {
+      setPhase(PHASES.DOWNLOADING)
+      setProgress(Math.round(i.percent || 0))
+      setSpeed(i.bytesPerSecond || 0)
     })
-    api.onUpdateDownloaded(info => {
-      setState({ phase: 'ready', version: info.version })
+    api.onUpdateDownloaded(i => {
+      setInfo(prev => ({ ...prev, ...i }))
+      setPhase(PHASES.READY)
     })
-    api.onUpdateError(info => {
-      setState({ phase: 'error', message: info.message })
+    api.onUpdateError(i => {
+      setError(i.message || 'Unknown error')
+      setPhase(PHASES.ERROR)
+    })
+    api.onUpdateInstalling?.(() => {
+      setPhase(PHASES.INSTALLING)
     })
 
     return () => api.removeUpdateListeners?.()
   }, [])
 
-  if (!state) return null
+  // ── Actions ─────────────────────────────────────────────────────────────
+  const handleDownload = useCallback(async () => {
+    setPhase(PHASES.DOWNLOADING)
+    setProgress(0)
+    const result = await api.startDownload()
+    if (result?.error) {
+      setError(result.error)
+      setPhase(PHASES.ERROR)
+    }
+  }, [api])
+
+  const handleInstall = useCallback(() => {
+    setPhase(PHASES.INSTALLING)
+    // Give React time to render "Installing…" before the app quits
+    setTimeout(() => api.installNow(), 400)
+  }, [api])
+
+  const handleOpenGitHub = useCallback(() => {
+    api.openReleasesPage?.()
+  }, [api])
+
+  const handleCheckNow = useCallback(async () => {
+    setPhase(PHASES.CHECKING)
+    setDismiss(false)
+    const result = await api.checkNow?.()
+    if (result?.error) {
+      // checkNow returned no update or error
+      setTimeout(() => setPhase(PHASES.IDLE), 3000)
+    }
+    // update-available event will fire if there IS a new version
+  }, [api])
+
+  // ── Render nothing if not Electron or dismissed or idle ─────────────────
+  if (!api?.isElectron) return null
+  if (dismissed && phase === PHASES.AVAILABLE) return null
+  if (phase === PHASES.IDLE || phase === PHASES.UP_TO_DATE) return null
+
+  const isWindows = api.platform === 'win32'
+  const isMac     = api.platform === 'darwin'
+
+  // ── Colour scheme per phase ─────────────────────────────────────────────
+  const barColor = {
+    [PHASES.CHECKING]:    'bg-gray-100 dark:bg-gray-800 border-gray-200 dark:border-gray-700',
+    [PHASES.AVAILABLE]:   'bg-teal-50 dark:bg-teal-900/30 border-teal-300 dark:border-teal-700',
+    [PHASES.DOWNLOADING]: 'bg-blue-50 dark:bg-blue-900/30 border-blue-300 dark:border-blue-700',
+    [PHASES.READY]:       'bg-green-50 dark:bg-green-900/30 border-green-300 dark:border-green-700',
+    [PHASES.INSTALLING]:  'bg-purple-50 dark:bg-purple-900/30 border-purple-300 dark:border-purple-700',
+    [PHASES.ERROR]:       'bg-red-50 dark:bg-red-900/30 border-red-300 dark:border-red-700',
+  }[phase] || 'bg-gray-50 border-gray-200'
 
   return (
     <div className={clsx(
-      'fixed bottom-4 right-4 z-50 max-w-sm rounded-xl shadow-2xl border p-4',
-      'bg-white dark:bg-navy-800',
-      state.phase === 'error'
-        ? 'border-red-200 dark:border-red-800'
-        : 'border-teal-200 dark:border-teal-700'
+      'w-full border-b px-4 py-2.5 flex items-center gap-3 transition-all',
+      barColor
     )}>
-      {/* Close button (only dismisses the banner, not the update) */}
-      <button
-        onClick={() => setState(null)}
-        className="absolute top-3 right-3 p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
-      >
-        <X size={14} className="text-gray-400" />
-      </button>
 
-      {/* ── Update available ── */}
-      {state.phase === 'available' && (
+      {/* ── CHECKING ── */}
+      {phase === PHASES.CHECKING && (
         <>
-          <div className="flex items-start gap-3 pr-4">
-            <div className="w-8 h-8 rounded-full bg-teal-100 dark:bg-teal-900/40 flex items-center justify-center flex-shrink-0">
-              <Download size={16} className="text-teal-600 dark:text-teal-400" />
-            </div>
-            <div>
-              <p className="font-semibold text-sm text-gray-900 dark:text-white">
-                Update available — v{state.version}
-              </p>
-              <p className="text-xs text-gray-500 mt-0.5">
-                A new version of SentinelNMS is ready to download.
-              </p>
-            </div>
+          <Loader size={15} className="text-gray-400 animate-spin flex-shrink-0" />
+          <span className="text-sm text-gray-600 dark:text-gray-300">Checking for updates…</span>
+        </>
+      )}
+
+      {/* ── AVAILABLE ── */}
+      {phase === PHASES.AVAILABLE && (
+        <>
+          <Download size={15} className="text-teal-600 dark:text-teal-400 flex-shrink-0" />
+          <div className="flex-1 min-w-0">
+            <span className="text-sm font-semibold text-teal-800 dark:text-teal-300">
+              SentinelNMS v{info.version} is available
+            </span>
+            <span className="text-xs text-teal-600 dark:text-teal-400 ml-2">
+              {info.releaseDate ? `Released ${new Date(info.releaseDate).toLocaleDateString()}` : ''}
+            </span>
           </div>
-          <div className="flex gap-2 mt-3">
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {(isWindows || isMac) ? (
+              <button
+                onClick={handleDownload}
+                className="flex items-center gap-1.5 bg-teal-600 hover:bg-teal-700 text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors"
+              >
+                <Download size={12} /> Download &amp; Update
+              </button>
+            ) : (
+              <button
+                onClick={handleOpenGitHub}
+                className="flex items-center gap-1.5 bg-teal-600 hover:bg-teal-700 text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors"
+              >
+                <ExternalLink size={12} /> View Release
+              </button>
+            )}
             <button
-              onClick={async () => {
-                setState(s => ({ ...s, phase: 'downloading', percent: 0 }))
-                await api.startDownload()
-              }}
-              className="flex-1 btn-primary text-xs py-2 flex items-center justify-center gap-1.5"
+              onClick={() => setDismiss(true)}
+              className="p-1 rounded hover:bg-black/10 dark:hover:bg-white/10"
+              title="Remind me later"
             >
-              <Download size={13} /> Download update
-            </button>
-            <button onClick={() => setState(null)} className="btn-secondary text-xs py-2 px-3">
-              Later
+              <X size={13} className="text-teal-600 dark:text-teal-400" />
             </button>
           </div>
         </>
       )}
 
-      {/* ── Downloading ── */}
-      {state.phase === 'downloading' && (
+      {/* ── DOWNLOADING ── */}
+      {phase === PHASES.DOWNLOADING && (
         <>
-          <div className="flex items-center gap-3 pr-4">
-            <RefreshCw size={16} className="text-teal-500 animate-spin flex-shrink-0" />
-            <div className="flex-1">
-              <p className="font-semibold text-sm text-gray-900 dark:text-white">
-                Downloading update… {state.percent ?? 0}%
-              </p>
-              {state.bytesPerSecond && (
-                <p className="text-xs text-gray-400">
-                  {(state.bytesPerSecond / 1024 / 1024).toFixed(1)} MB/s
-                </p>
+          <RefreshCw size={15} className="text-blue-500 animate-spin flex-shrink-0" />
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-sm font-medium text-blue-800 dark:text-blue-300">
+                Downloading v{info.version}… {progress}%
+              </span>
+              {speed > 0 && (
+                <span className="text-xs text-blue-500 font-mono">
+                  {(speed / 1024 / 1024).toFixed(1)} MB/s
+                </span>
               )}
             </div>
-          </div>
-          <div className="mt-3 w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5">
-            <div
-              className="bg-teal-500 h-1.5 rounded-full transition-all duration-300"
-              style={{ width: `${state.percent ?? 0}%` }}
-            />
+            <div className="w-full bg-blue-200 dark:bg-blue-800 rounded-full h-1.5">
+              <div
+                className="bg-blue-500 h-1.5 rounded-full transition-all duration-300"
+                style={{ width: `${progress}%` }}
+              />
+            </div>
           </div>
         </>
       )}
 
-      {/* ── Ready to install ── */}
-      {state.phase === 'ready' && (
+      {/* ── READY TO INSTALL ── */}
+      {phase === PHASES.READY && (
         <>
-          <div className="flex items-start gap-3 pr-4">
-            <div className="w-8 h-8 rounded-full bg-green-100 dark:bg-green-900/40 flex items-center justify-center flex-shrink-0">
-              <RefreshCw size={16} className="text-green-600 dark:text-green-400" />
-            </div>
-            <div>
-              <p className="font-semibold text-sm text-gray-900 dark:text-white">
-                v{state.version} ready to install
-              </p>
-              <p className="text-xs text-gray-500 mt-0.5">
-                Restart the app to apply the update.
-              </p>
-            </div>
+          <CheckCircle size={15} className="text-green-600 dark:text-green-400 flex-shrink-0" />
+          <div className="flex-1 min-w-0">
+            <span className="text-sm font-semibold text-green-800 dark:text-green-300">
+              v{info.version} downloaded and ready to install
+            </span>
+            <span className="text-xs text-green-600 dark:text-green-400 ml-2">
+              {isWindows
+                ? 'The app will restart automatically after install'
+                : 'The app will restart to apply the update'}
+            </span>
           </div>
-          <div className="flex gap-2 mt-3">
+          <div className="flex items-center gap-2 flex-shrink-0">
             <button
-              onClick={() => api.installNow()}
-              className="flex-1 btn-primary text-xs py-2 flex items-center justify-center gap-1.5"
+              onClick={handleInstall}
+              className="flex items-center gap-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-semibold px-4 py-1.5 rounded-lg transition-colors animate-pulse"
             >
-              <RefreshCw size={13} /> Restart &amp; Update
+              <RefreshCw size={12} /> Restart &amp; Install
             </button>
-            <button onClick={() => setState(null)} className="btn-secondary text-xs py-2 px-3">
+            <button
+              onClick={() => setPhase(PHASES.IDLE)}
+              className="text-xs text-green-600 dark:text-green-400 hover:underline"
+              title="Install on next quit"
+            >
               Later
             </button>
           </div>
         </>
       )}
 
-      {/* ── Error ── */}
-      {state.phase === 'error' && (
-        <div className="flex items-start gap-3 pr-4">
-          <AlertTriangle size={16} className="text-red-500 flex-shrink-0 mt-0.5" />
-          <div>
-            <p className="font-semibold text-sm text-gray-900 dark:text-white">Update failed</p>
-            <p className="text-xs text-red-500 mt-0.5 break-words">{state.message}</p>
+      {/* ── INSTALLING ── */}
+      {phase === PHASES.INSTALLING && (
+        <>
+          <Loader size={15} className="text-purple-500 animate-spin flex-shrink-0" />
+          <span className="text-sm font-semibold text-purple-800 dark:text-purple-300">
+            Installing update… The app will restart automatically.
+          </span>
+          <span className="text-xs text-purple-500 ml-2">Stopping backend services…</span>
+        </>
+      )}
+
+      {/* ── ERROR ── */}
+      {phase === PHASES.ERROR && (
+        <>
+          <AlertTriangle size={15} className="text-red-500 flex-shrink-0" />
+          <div className="flex-1 min-w-0">
+            <span className="text-sm font-medium text-red-800 dark:text-red-300">Update failed: </span>
+            <span className="text-xs text-red-600 dark:text-red-400 truncate">{error}</span>
           </div>
-        </div>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <button
+              onClick={handleOpenGitHub}
+              className="flex items-center gap-1 text-xs text-red-600 dark:text-red-400 underline"
+            >
+              <ExternalLink size={11} /> Download manually
+            </button>
+            <button onClick={() => setPhase(PHASES.IDLE)} className="p-1 rounded hover:bg-black/10 dark:hover:bg-white/10">
+              <X size={13} className="text-red-400" />
+            </button>
+          </div>
+        </>
       )}
     </div>
   )

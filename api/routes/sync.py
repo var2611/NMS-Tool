@@ -126,12 +126,12 @@ async def sync_device(payload: SyncPayload, db: AsyncSession = Depends(get_db)):
             await db.commit()
         return {"status": "ok", "action": "deactivated"}
 
-    # Upsert by IP + site_name (each site owns its own IP space)
+    # Upsert by IP address only — the unique constraint is on ip_address alone,
+    # so there can only ever be one record per IP regardless of site_name.
+    # If the device was previously added manually on the server and is now
+    # being synced from a desktop, we claim it for the desktop (update site_name).
     result = await db.execute(
-        select(Device).where(
-            Device.ip_address == d.get("ip_address"),
-            Device.site_name == site,
-        )
+        select(Device).where(Device.ip_address == d.get("ip_address"))
     )
     device = result.scalar_one_or_none()
 

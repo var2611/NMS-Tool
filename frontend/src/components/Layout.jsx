@@ -1,5 +1,6 @@
 import { NavLink } from 'react-router-dom'
 import { useStore } from '../store'
+import UpdateBanner from './UpdateBanner'
 import {
   LayoutDashboard, Monitor, Radar, Bell, AlertTriangle,
   FileCode, BarChart3, Settings, Wifi, WifiOff,
@@ -92,6 +93,9 @@ export default function Layout({ children }) {
             </span>
           </div>
         </header>
+
+        {/* Update banner — shown only in desktop Electron app */}
+        <UpdateBanner />
 
         {/* Page content */}
         <main className="flex-1 overflow-y-auto p-6">

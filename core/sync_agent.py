@@ -120,50 +120,83 @@ class SyncAgent:
                                   self._last_error)
             return
 
-        # ── 2. Push pending queue items ────────────────────────────────────────
-        async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                select(SyncQueue)
-                .where(SyncQueue.status == SyncStatus.pending)
-                .order_by(SyncQueue.created_at)
-                .limit(100)
+        # ── 2. Drain the entire queue in batches ──────────────────────────────
+        # Process batches of BATCH_SIZE until the queue is empty or all items
+        # in a batch fail (server-side error — stop retrying immediately).
+        # This prevents the old "100 items per 5-minute cycle" bottleneck where
+        # the queue never drained because new items arrived faster than the
+        # fixed-size batch could push them.
+        BATCH_SIZE = 200
+        MAX_CYCLE_SECS = 240   # safety valve — never run longer than 4 min
+
+        total_pushed = 0
+        total_failed = 0
+        last_error   = None
+        still_pending = 0
+
+        while (time.monotonic() - start_ms) < MAX_CYCLE_SECS:
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(SyncQueue)
+                    .where(SyncQueue.status == SyncStatus.pending)
+                    .order_by(SyncQueue.created_at)
+                    .limit(BATCH_SIZE)
+                )
+                items = result.scalars().all()
+
+                if not items:
+                    # Queue is empty — we're done
+                    break
+
+                batch_pushed = 0
+                batch_failed = 0
+                for item in items:
+                    success = await self._push_item(item)
+                    if success:
+                        item.status = SyncStatus.synced
+                        item.last_attempt = datetime.utcnow()
+                        batch_pushed += 1
+                    else:
+                        item.attempts += 1
+                        item.last_attempt = datetime.utcnow()
+                        if item.attempts >= 5:
+                            item.status = SyncStatus.failed
+                        last_error = item.error
+                        batch_failed += 1
+
+                # Count remaining BEFORE commit so we log the right number
+                pending_result = await session.execute(
+                    select(func.count(SyncQueue.id)).where(SyncQueue.status == SyncStatus.pending)
+                )
+                still_pending = (pending_result.scalar() or 0) - (len(items) - batch_pushed - batch_failed)
+
+                await session.commit()
+
+            total_pushed += batch_pushed
+            total_failed += batch_failed
+
+            logger.debug(
+                f"Sync batch: pushed={batch_pushed} failed={batch_failed} "
+                f"remaining≈{still_pending}"
             )
-            items = result.scalars().all()
 
-            pushed = 0
-            failed = 0
-            last_error = None
-            for item in items:
-                success = await self._push_item(item)
-                if success:
-                    item.status = SyncStatus.synced
-                    item.last_attempt = datetime.utcnow()
-                    pushed += 1
-                else:
-                    item.attempts += 1
-                    item.last_attempt = datetime.utcnow()
-                    if item.attempts >= 5:
-                        item.status = SyncStatus.failed
-                    last_error = item.error
-                    failed += 1
-
-            # Count remaining pending items (after this batch)
-            pending_result = await session.execute(
-                select(func.count(SyncQueue.id)).where(SyncQueue.status == SyncStatus.pending)
-            )
-            still_pending = pending_result.scalar() or 0
-
-            await session.commit()
+            # If nothing went through this batch, the server is having issues —
+            # stop now and let the next scheduled cycle retry.
+            if batch_pushed == 0:
+                break
 
         duration = int((time.monotonic() - start_ms) * 1000)
 
         # ── 3. Write sync log entry ────────────────────────────────────────────
-        if failed == 0:
+        if total_failed == 0:
             cycle_status = "success"
-        elif pushed > 0:
+        elif total_pushed > 0:
             cycle_status = "partial"
         else:
             cycle_status = "failed"
+
+        pushed = total_pushed
+        failed = total_failed
 
         await self._write_log(cycle_status, pushed, failed, still_pending,
                               duration, last_error if failed > 0 else None)

@@ -332,7 +332,35 @@ ipcMain.handle('start-update-download', async () => {
   }
 })
 
-ipcMain.handle('install-update-now', () => {
+ipcMain.handle('install-update-now', async () => {
+  // 1. Tell the renderer we're about to restart (so it can show "Installing…")
+  if (mainWindow) {
+    mainWindow.webContents.send('update-installing')
+  }
+
+  // 2. Gracefully stop the Python backend before the installer takes over.
+  //    Give it 4 seconds to shut down cleanly before we force-quit.
+  if (backendProcess) {
+    console.log('[updater] Stopping backend before update install...')
+    backendProcess.kill('SIGTERM')
+    await new Promise(resolve => setTimeout(resolve, 4000))
+    backendProcess?.kill('SIGKILL')
+    backendProcess = null
+  }
+
+  // 3. Install silently (isSilent=true) and relaunch after install (isForceRunAfter=true).
+  //    On Windows:  runs NSIS installer silently, then relaunches the new version.
+  //    On macOS:    moves the new .app into place (requires signed + notarized build).
   app.isQuitting = true
-  autoUpdater.quitAndInstall(false, true)
+  autoUpdater.quitAndInstall(true, true)
+})
+
+ipcMain.handle('open-releases-page', () => {
+  const { shell } = require('electron')
+  shell.openExternal('https://github.com/var2611/NMS-Tool/releases/latest')
+})
+
+ipcMain.handle('check-for-updates-now', () => {
+  if (!app.isPackaged) return { error: 'Dev mode — no updates' }
+  return autoUpdater.checkForUpdates().catch(e => ({ error: e.message }))
 })

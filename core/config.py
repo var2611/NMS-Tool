@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     # App
     app_mode: str = Field("desktop", env="APP_MODE")
     app_name: str = "SentinelNMS"
-    app_version: str = "1.0.3"
+    app_version: str = "1.0.4"
     debug: bool = Field(False, env="DEBUG")
 
     # API

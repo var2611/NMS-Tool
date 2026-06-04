@@ -6,17 +6,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
   isElectron:       true,
 
   // ── Auto-updater ──────────────────────────────────────────────────────────
-  startDownload:    () => ipcRenderer.invoke('start-update-download'),
-  installNow:       () => ipcRenderer.invoke('install-update-now'),
+  startDownload:      () => ipcRenderer.invoke('start-update-download'),
+  installNow:         () => ipcRenderer.invoke('install-update-now'),
+  checkNow:           () => ipcRenderer.invoke('check-for-updates-now'),
+  openReleasesPage:   () => ipcRenderer.invoke('open-releases-page'),
+  platform:           process.platform,   // 'win32' | 'darwin' | 'linux'
 
-  onUpdateAvailable:     (cb) => ipcRenderer.on('update-available',         (_e, info) => cb(info)),
-  onDownloadProgress:    (cb) => ipcRenderer.on('update-download-progress', (_e, info) => cb(info)),
-  onUpdateDownloaded:    (cb) => ipcRenderer.on('update-downloaded',        (_e, info) => cb(info)),
-  onUpdateError:         (cb) => ipcRenderer.on('update-error',             (_e, info) => cb(info)),
+  onUpdateAvailable:    (cb) => ipcRenderer.on('update-available',         (_e, i) => cb(i)),
+  onDownloadProgress:   (cb) => ipcRenderer.on('update-download-progress', (_e, i) => cb(i)),
+  onUpdateDownloaded:   (cb) => ipcRenderer.on('update-downloaded',        (_e, i) => cb(i)),
+  onUpdateError:        (cb) => ipcRenderer.on('update-error',             (_e, i) => cb(i)),
+  onUpdateInstalling:   (cb) => ipcRenderer.on('update-installing',        ()       => cb()),
   removeUpdateListeners: () => {
-    ipcRenderer.removeAllListeners('update-available')
-    ipcRenderer.removeAllListeners('update-download-progress')
-    ipcRenderer.removeAllListeners('update-downloaded')
-    ipcRenderer.removeAllListeners('update-error')
+    ['update-available','update-download-progress','update-downloaded',
+     'update-error','update-installing'].forEach(ch => ipcRenderer.removeAllListeners(ch))
   },
 })

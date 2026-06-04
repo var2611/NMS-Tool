@@ -26,7 +26,6 @@ class ErrorBoundary extends Component {
 }
 import { useWebSocket } from './hooks/useWebSocket'
 import Layout from './components/Layout'
-import UpdateBanner from './components/UpdateBanner'
 import Dashboard from './pages/Dashboard'
 import Devices from './pages/Devices'
 import DeviceDetail from './pages/DeviceDetail'
@@ -48,7 +47,6 @@ function AppInner() {
 
   return (
     <Layout>
-      <UpdateBanner />
       <Routes>
         <Route path="/" element={<Dashboard />} />
         <Route path="/devices" element={<Devices />} />
