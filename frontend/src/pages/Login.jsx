@@ -17,7 +17,12 @@ export default function Login() {
     setLoading(true)
     try {
       const res = await api.post('/auth/login', { username, password })
-      setAuth(res.data.access_token, { username: res.data.username, role: res.data.role })
+      setAuth(res.data.access_token, {
+        username: res.data.username,
+        full_name: res.data.full_name,
+        role: res.data.role,
+        allowed_sites: res.data.allowed_sites || [],
+      })
       navigate('/')
     } catch (err) {
       toast.error(err.response?.data?.detail || 'Invalid username or password')

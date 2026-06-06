@@ -35,6 +35,7 @@ import Alerts from './pages/Alerts'
 import MIBs from './pages/MIBs'
 import Reports from './pages/Reports'
 import SettingsPage from './pages/Settings'
+import Users from './pages/Users'
 import Login from './pages/Login'
 
 function AppInner() {
@@ -57,6 +58,7 @@ function AppInner() {
         <Route path="/mibs" element={<MIBs />} />
         <Route path="/reports" element={<Reports />} />
         <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/users" element={<Users />} />
       </Routes>
     </Layout>
   )

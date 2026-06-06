@@ -3,13 +3,15 @@ import { create } from 'zustand'
 export const useStore = create((set, get) => ({
   // Auth
   token: localStorage.getItem('nms_token'),
-  user: null,
+  user: JSON.parse(localStorage.getItem('nms_user') || 'null'),
   setAuth: (token, user) => {
     localStorage.setItem('nms_token', token)
+    localStorage.setItem('nms_user', JSON.stringify(user))
     set({ token, user })
   },
   logout: () => {
     localStorage.removeItem('nms_token')
+    localStorage.removeItem('nms_user')
     set({ token: null, user: null })
   },
 

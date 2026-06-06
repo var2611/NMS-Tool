@@ -301,8 +301,13 @@ class User(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     username: Mapped[str] = mapped_column(String(100), unique=True, index=True)
     email: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    full_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     hashed_password: Mapped[str] = mapped_column(String(300))
-    role: Mapped[str] = mapped_column(String(20), default="viewer")  # admin, viewer
+    # Roles: admin (full access) | operator (edit assigned sites) | viewer (read-only)
+    role: Mapped[str] = mapped_column(String(20), default="viewer")
+    # Multi-tenant: list of site_names this user may access.
+    # null/empty + role=admin → all sites. For non-admins, empty = no devices visible.
+    allowed_sites: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     last_login: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
@@ -356,6 +361,8 @@ class SystemSetting(Base):
 _MIGRATIONS = [
     ("devices", "source",    "VARCHAR(50) DEFAULT 'manual'"),
     ("devices", "site_name", "VARCHAR(200)"),
+    ("users",   "full_name",     "VARCHAR(200)"),
+    ("users",   "allowed_sites", "JSON" ),
 ]
 
 async def _run_migrations(conn):

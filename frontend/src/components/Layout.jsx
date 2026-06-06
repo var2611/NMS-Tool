@@ -4,7 +4,7 @@ import UpdateBanner from './UpdateBanner'
 import {
   LayoutDashboard, Monitor, Radar, Bell, AlertTriangle,
   FileCode, BarChart3, Settings, Wifi, WifiOff,
-  Sun, Moon, Menu, Zap
+  Sun, Moon, Menu, Zap, Users as UsersIcon, LogOut
 } from 'lucide-react'
 import clsx from 'clsx'
 import SentinelLogo from './SentinelLogo'
@@ -17,11 +17,14 @@ const NAV = [
   { to: '/alerts',    icon: AlertTriangle,   label: 'Alerts' },
   { to: '/mibs',      icon: FileCode,        label: 'MIB Manager' },
   { to: '/reports',   icon: BarChart3,       label: 'Reports' },
+  { to: '/users',     icon: UsersIcon,       label: 'Users', adminOnly: true },
   { to: '/settings',  icon: Settings,        label: 'Settings' },
 ]
 
 export default function Layout({ children }) {
-  const { sidebarOpen, toggleSidebar, toggleTheme, theme, wsConnected, alertSummary } = useStore()
+  const { sidebarOpen, toggleSidebar, toggleTheme, theme, wsConnected, alertSummary, user, logout } = useStore()
+  const isAdmin = user?.role === 'admin'
+  const visibleNav = NAV.filter(item => !item.adminOnly || isAdmin)
 
   return (
     <div className="flex h-screen overflow-hidden bg-gray-50 dark:bg-gray-950">
@@ -41,7 +44,7 @@ export default function Layout({ children }) {
 
         {/* Nav */}
         <nav className="flex-1 py-4 px-2 space-y-0.5 overflow-y-auto">
-          {NAV.map(({ to, icon: Icon, label }) => (
+          {visibleNav.map(({ to, icon: Icon, label }) => (
             <NavLink key={to} to={to} end={to === '/'}
               className={({ isActive }) => clsx(
                 'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all',
@@ -77,6 +80,20 @@ export default function Layout({ children }) {
             {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
             {sidebarOpen && (theme === 'dark' ? 'Light mode' : 'Dark mode')}
           </button>
+
+          {/* Current user + logout */}
+          {user && (
+            <button onClick={logout}
+              className="flex items-center gap-3 w-full px-3 py-2 rounded-lg text-sm text-gray-500 hover:bg-red-50 dark:hover:bg-red-900/20 hover:text-red-600 transition-colors">
+              <LogOut size={16} />
+              {sidebarOpen && (
+                <span className="flex-1 text-left truncate">
+                  {user.full_name || user.username}
+                  <span className="block text-xs text-gray-400 capitalize">{user.role} · log out</span>
+                </span>
+              )}
+            </button>
+          )}
         </div>
       </aside>
 

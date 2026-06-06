@@ -5,9 +5,10 @@ from typing import List, Optional
 from datetime import datetime
 from pydantic import BaseModel
 
-from core.database import get_db, Device, DeviceMetric, DeviceStatus, DeviceType, SnmpVersion
+from core.database import get_db, Device, DeviceMetric, DeviceStatus, DeviceType, SnmpVersion, User
 from core.scheduler import scheduler
 from core.snmp_engine import list_device_interfaces
+from api.routes.auth import get_current_user
 
 router = APIRouter()
 
@@ -78,9 +79,25 @@ async def list_devices(
     search: Optional[str] = None,
     limit: int = Query(100, le=500),
     offset: int = 0,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     q = select(Device).where(Device.is_active == True)
+
+    # ── Multi-tenant filter ──────────────────────────────────────────────────
+    # Admins see everything. Non-admins see only devices from their allowed
+    # sites, plus locally-owned devices (source != desktop_sync) which have no
+    # site restriction.
+    if user.role != "admin":
+        allowed = user.allowed_sites or []
+        if allowed:
+            q = q.where(
+                (Device.site_name.in_(allowed)) | (Device.source != "desktop_sync")
+            )
+        else:
+            # No sites assigned → only non-synced (local) devices
+            q = q.where(Device.source != "desktop_sync")
+
     if status:
         q = q.where(Device.status == status)
     if device_type:
@@ -190,10 +207,16 @@ async def delete_device(device_id: int, db: AsyncSession = Depends(get_db)):
 
 @router.post("/{device_id}/poll")
 async def force_poll(device_id: int, db: AsyncSession = Depends(get_db)):
-    """Immediately poll a device."""
+    """Immediately poll a device. Rejected for remote-agent-owned devices."""
     result = await db.execute(select(Device).where(Device.id == device_id))
-    if not result.scalar_one_or_none():
+    device = result.scalar_one_or_none()
+    if not device:
         raise HTTPException(404, "Device not found")
+    if device.source == "desktop_sync":
+        raise HTTPException(
+            409,
+            f"Device is monitored by the '{device.site_name}' agent — polling is managed there, not on the server"
+        )
     scheduler.force_poll(device_id)
     return {"message": "Poll triggered"}
 
@@ -254,6 +277,11 @@ async def get_device_interfaces(device_id: int, db: AsyncSession = Depends(get_d
     device = result.scalar_one_or_none()
     if not device:
         raise HTTPException(404, "Device not found")
+    if device.source == "desktop_sync":
+        raise HTTPException(
+            409,
+            f"Interface monitoring is managed by the '{device.site_name}' agent, not the server"
+        )
 
     try:
         interfaces = await list_device_interfaces(
@@ -280,6 +308,11 @@ async def set_monitored_interfaces(
     device = result.scalar_one_or_none()
     if not device:
         raise HTTPException(404, "Device not found")
+    if device.source == "desktop_sync":
+        raise HTTPException(
+            409,
+            f"Interface monitoring is managed by the '{device.site_name}' agent, not the server"
+        )
 
     device.tags = {**(device.tags or {}), "monitored_interfaces": data.indexes}
     device.updated_at = datetime.utcnow()

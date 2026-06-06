@@ -271,10 +271,13 @@ export default function Devices() {
                 </span>
               )}
               <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                <button onClick={e => pollNow(e, d.id)}
-                  className="p-1.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700" title="Poll now">
-                  <Radio size={14} className="text-teal-600" />
-                </button>
+                {/* Poll Now only for locally-owned devices — remote agents poll their own */}
+                {d.source !== 'desktop_sync' && (
+                  <button onClick={e => pollNow(e, d.id)}
+                    className="p-1.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700" title="Poll now">
+                    <Radio size={14} className="text-teal-600" />
+                  </button>
+                )}
                 <button onClick={e => removeDevice(e, d.id)}
                   className="p-1.5 rounded hover:bg-red-100 dark:hover:bg-red-900/30" title="Remove">
                   <Trash2 size={14} className="text-red-400" />

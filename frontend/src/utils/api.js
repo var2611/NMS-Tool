@@ -86,3 +86,12 @@ export const settingsApi = {
   syncFailedQueue: () => api.get('/sync/queue/failed'),
   syncRetryFailed: () => api.post('/sync/queue/retry'),
 }
+
+export const usersApi = {
+  me:            () => api.get('/auth/me'),
+  list:          () => api.get('/auth/users'),
+  create:        (data) => api.post('/auth/users', data),
+  update:        (id, data) => api.put(`/auth/users/${id}`, data),
+  resetPassword: (id, new_password) => api.post(`/auth/users/${id}/reset-password`, { new_password }),
+  delete:        (id) => api.delete(`/auth/users/${id}`),
+}

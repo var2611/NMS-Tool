@@ -368,6 +368,11 @@ export default function DeviceDetail() {
 
   if (!device) return null
 
+  // Remote = device owned by a desktop agent. The server must NOT poll it or
+  // run live SNMP queries (interface monitoring) — those would conflict with
+  // the agent's data and can't reach the remote LAN anyway.
+  const isRemote = device.source === 'desktop_sync'
+
   return (
     <div className="space-y-5 animate-fade-in">
 
@@ -421,14 +426,28 @@ export default function DeviceDetail() {
             <option value={72}>Last 3 days</option>
             <option value={168}>Last 7 days</option>
           </select>
-          <button onClick={pollNow} className="btn-secondary flex items-center gap-1.5 text-sm">
-            <Radio size={14} /> Poll now
-          </button>
+          {/* Poll Now only for locally-owned devices — remote agents own their own polling */}
+          {!isRemote && (
+            <button onClick={pollNow} className="btn-secondary flex items-center gap-1.5 text-sm">
+              <Radio size={14} /> Poll now
+            </button>
+          )}
           <button onClick={removeDevice} className="btn-danger flex items-center gap-1.5 text-sm">
             <Trash2 size={14} /> Remove
           </button>
         </div>
       </div>
+
+      {/* Remote-managed banner */}
+      {isRemote && (
+        <div className="card p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 flex items-center gap-2">
+          <span className="text-base">🔄</span>
+          <p className="text-sm text-blue-700 dark:text-blue-300">
+            This device is monitored by the <strong>{device.site_name}</strong> agent.
+            Polling, interface selection, and SNMP queries are managed there — this is a read-only view of synced data.
+          </p>
+        </div>
+      )}
 
       {/* ── Device info + stats ── */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -478,8 +497,12 @@ export default function DeviceDetail() {
         {ifaceIndexes().length === 0 ? (
           <div className="card p-4 flex flex-col justify-center items-center text-center h-40">
             <Wifi size={24} className="text-gray-300 mb-2" />
-            <p className="text-sm text-gray-400">No interfaces selected</p>
-            <p className="text-xs text-gray-400 mt-1">Open "Interface Monitoring" below and select interfaces to track</p>
+            <p className="text-sm text-gray-400">No interface data yet</p>
+            <p className="text-xs text-gray-400 mt-1">
+              {isRemote
+                ? `Interface selection is managed by the ${device.site_name} agent`
+                : 'Open "Interface Monitoring" below and select interfaces to track'}
+            </p>
           </div>
         ) : (
           ifaceIndexes().map(idx => {
@@ -522,8 +545,10 @@ export default function DeviceDetail() {
         )}
       </div>
 
-      {/* ── Interface management ── */}
-      <InterfacePanel device={device} />
+      {/* ── Interface management — local devices only ── */}
+      {/* Remote devices: interface selection runs live SNMP from the owning
+          agent, not the server. Showing it here would query an unreachable LAN. */}
+      {!isRemote && <InterfacePanel device={device} />}
 
       {/* ── Notes ── */}
       {device.notes && (
