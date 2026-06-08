@@ -1,14 +1,22 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, desc
+from sqlalchemy import select, func, desc, delete as sa_delete
 from typing import List, Optional
 from datetime import datetime
+from pathlib import Path
 from pydantic import BaseModel
+import logging
 
-from core.database import get_db, Device, DeviceMetric, DeviceStatus, DeviceType, SnmpVersion, User
+from core.database import (
+    get_db, Device, DeviceMetric, DeviceStatus, DeviceType, SnmpVersion, User,
+    Alert, TrapEvent, SyncQueue, MibFile,
+)
 from core.scheduler import scheduler
-from core.snmp_engine import list_device_interfaces
-from api.routes.auth import get_current_user
+from core.snmp_engine import list_device_interfaces, walk_mib_table
+from core.mib_parser import MibParser, extract_port_tables, decode_mib_bytes
+from api.routes.auth import get_current_user, require_admin
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -24,16 +32,21 @@ class DeviceCreate(BaseModel):
     poll_interval: int = 300
     notes: Optional[str] = None
     tags: Optional[dict] = None
+    mib_id: Optional[int] = None
 
 class DeviceUpdate(BaseModel):
     name: Optional[str] = None
     device_type: Optional[str] = None
     snmp_community: Optional[str] = None
     snmp_version: Optional[str] = None
+    snmp_port: Optional[int] = None
     poll_interval: Optional[int] = None
     notes: Optional[str] = None
     tags: Optional[dict] = None
     is_active: Optional[bool] = None
+    # Optional[int] with explicit-unset detection (see update_device) — sending
+    # `mib_id: null` clears the MIB association instead of being ignored.
+    mib_id: Optional[int] = None
 
 class DeviceOut(BaseModel):
     id: int
@@ -60,6 +73,8 @@ class DeviceOut(BaseModel):
     is_active: bool
     auto_discovered: bool
     created_at: datetime
+    # Vendor MIB profile (drives MIB-aware port discovery)
+    mib_id: Optional[int] = None
     # Origin
     source: Optional[str] = "manual"
     site_name: Optional[str] = None
@@ -185,9 +200,20 @@ async def update_device(device_id: int, data: DeviceUpdate, db: AsyncSession = D
     device = result.scalar_one_or_none()
     if not device:
         raise HTTPException(404, "Device not found")
-    
+
+    # mib_id is nullable — "clear MIB profile" must send `mib_id: null` and have
+    # it actually applied, so it needs explicit-unset handling outside the
+    # exclude_none loop below (which would otherwise silently drop it).
+    mib_id_sent = "mib_id" in data.model_fields_set
+    mib_id_value = data.mib_id
+
     for field, value in data.model_dump(exclude_none=True).items():
+        if field == "mib_id":
+            continue
         setattr(device, field, value)
+    if mib_id_sent:
+        device.mib_id = mib_id_value
+
     device.updated_at = datetime.utcnow()
     await db.commit()
     await db.refresh(device)
@@ -200,9 +226,55 @@ async def delete_device(device_id: int, db: AsyncSession = Depends(get_db)):
     device = result.scalar_one_or_none()
     if not device:
         raise HTTPException(404, "Device not found")
+    ip_address = device.ip_address
     device.is_active = False
     await db.commit()
+
+    # Propagate the removal to the cloud — without this, a device deleted on a
+    # desktop agent silently reappears on the server after the next sync cycle
+    # (no-op when sync is disabled, e.g. on the server itself).
+    from core.sync_agent import sync_agent
+    await sync_agent.queue_entity("device", device_id, "delete", {"ip_address": ip_address})
+
     return {"message": "Device removed"}
+
+
+@router.delete("/{device_id}/purge")
+async def purge_device(
+    device_id: int,
+    db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
+    """Admin-only: permanently erase a device AND all of its history.
+
+    Unlike the soft-delete above (which just hides the device), this removes
+    the device row plus every metric, alert, trap, and pending sync-queue entry
+    that references it. Irreversible — the frontend gates this behind a
+    type-to-confirm dialog.
+    """
+    result = await db.execute(select(Device).where(Device.id == device_id))
+    device = result.scalar_one_or_none()
+    if not device:
+        raise HTTPException(404, "Device not found")
+
+    ip_address = device.ip_address
+    name = device.name
+
+    await db.execute(sa_delete(DeviceMetric).where(DeviceMetric.device_id == device_id))
+    await db.execute(sa_delete(Alert).where(Alert.device_id == device_id))
+    await db.execute(sa_delete(TrapEvent).where(TrapEvent.device_id == device_id))
+    await db.execute(sa_delete(SyncQueue).where(
+        SyncQueue.entity_type.in_(["device", "metric"]),
+        SyncQueue.entity_id == device_id,
+    ))
+    await db.delete(device)
+    await db.commit()
+
+    from core.sync_agent import sync_agent
+    await sync_agent.queue_entity("device", device_id, "delete", {"ip_address": ip_address})
+
+    logger.warning(f"Device #{device_id} ({name} / {ip_address}) permanently purged by {_admin.username}")
+    return {"message": f"\"{name}\" and all of its history were permanently deleted"}
 
 
 @router.post("/{device_id}/poll")
@@ -270,9 +342,61 @@ class MonitoredInterfacesRequest(BaseModel):
     indexes: List[int]  # interface indexes to monitor
 
 
+async def _walk_device_mib_tables(device: Device, db: AsyncSession):
+    """Detect and walk the vendor port/interface tables defined by a device's
+    attached MIB profile (e.g. YLWIFI-MIB's Ethernet/radio/VAP/repeater
+    tables) — the MIB-aware complement to the standard ifTable walk above.
+
+    Best-effort by design: a missing/unparseable MIB or a failed table walk
+    must never break the standard interface list, so every failure here is
+    swallowed (and logged) rather than raised. Returns `(mib_name, tables)`,
+    where `tables` is `[{"table", "columns", "rows"}, ...]` for whichever
+    detected tables actually returned data.
+    """
+    mib = (await db.execute(select(MibFile).where(MibFile.id == device.mib_id))).scalar_one_or_none()
+    if not mib:
+        return None, []
+
+    try:
+        text = decode_mib_bytes(Path(mib.file_path).read_bytes())
+        parsed = MibParser().parse(text, mib.filename)
+        port_tables = extract_port_tables(text, parsed["oids"])
+    except Exception as e:
+        logger.warning(f"Could not parse MIB #{mib.id} ({mib.filename}) for device #{device.id}: {e}")
+        return mib.name, []
+
+    tables = []
+    for t in port_tables:
+        try:
+            rows = await walk_mib_table(
+                device.ip_address, t["columns"],
+                device.snmp_community or "public",
+                device.snmp_version.value if device.snmp_version else "v2c",
+                device.snmp_port or 161,
+            )
+        except Exception as e:
+            logger.warning(f"MIB table walk failed for {t['table']} on device #{device.id}: {e}")
+            continue
+        if rows:
+            tables.append({
+                "table": t["table"],
+                "columns": [{"name": c["name"], "description": c["description"]} for c in t["columns"]],
+                "rows": rows,
+            })
+
+    return mib.name, tables
+
+
 @router.get("/{device_id}/interfaces")
 async def get_device_interfaces(device_id: int, db: AsyncSession = Depends(get_db)):
-    """Fetch all interfaces from device via live SNMP + return which are monitored."""
+    """Fetch all interfaces from device via live SNMP + return which are monitored.
+
+    When the device has a vendor MIB attached (`mib_id`), this also detects
+    and walks any interface/port-shaped tables the MIB defines and returns
+    them as `mib_tables` — merged into the same response, alongside the
+    standard `interfaces`, and clearly labeled by their MIB table name so the
+    UI can present "every port this device exposes" from both sources at once.
+    """
     result = await db.execute(select(Device).where(Device.id == device_id))
     device = result.scalar_one_or_none()
     if not device:
@@ -294,7 +418,17 @@ async def get_device_interfaces(device_id: int, db: AsyncSession = Depends(get_d
         raise HTTPException(503, f"SNMP query failed: {e}")
 
     monitored = (device.tags or {}).get("monitored_interfaces", [])
-    return {"interfaces": interfaces, "monitored": monitored}
+
+    mib_name, mib_tables = (None, [])
+    if device.mib_id:
+        mib_name, mib_tables = await _walk_device_mib_tables(device, db)
+
+    return {
+        "interfaces": interfaces,
+        "monitored": monitored,
+        "mib_name": mib_name,
+        "mib_tables": mib_tables,
+    }
 
 
 @router.post("/{device_id}/interfaces")

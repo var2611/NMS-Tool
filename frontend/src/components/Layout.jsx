@@ -17,14 +17,15 @@ const NAV = [
   { to: '/alerts',    icon: AlertTriangle,   label: 'Alerts' },
   { to: '/mibs',      icon: FileCode,        label: 'MIB Manager' },
   { to: '/reports',   icon: BarChart3,       label: 'Reports' },
-  { to: '/users',     icon: UsersIcon,       label: 'Users', adminOnly: true },
+  { to: '/users',     icon: UsersIcon,       label: 'Users', adminOnly: true, hideOnDesktop: true },
   { to: '/settings',  icon: Settings,        label: 'Settings' },
 ]
 
 export default function Layout({ children }) {
-  const { sidebarOpen, toggleSidebar, toggleTheme, theme, wsConnected, alertSummary, user, logout } = useStore()
+  const { sidebarOpen, toggleSidebar, toggleTheme, theme, wsConnected, alertSummary, user, logout, appMode } = useStore()
   const isAdmin = user?.role === 'admin'
-  const visibleNav = NAV.filter(item => !item.adminOnly || isAdmin)
+  const isDesktop = appMode === 'desktop'
+  const visibleNav = NAV.filter(item => (!item.adminOnly || isAdmin) && (!item.hideOnDesktop || !isDesktop))
 
   return (
     <div className="flex h-screen overflow-hidden bg-gray-50 dark:bg-gray-950">

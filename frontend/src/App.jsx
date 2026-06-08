@@ -25,6 +25,7 @@ class ErrorBoundary extends Component {
   }
 }
 import { useWebSocket } from './hooks/useWebSocket'
+import { settingsApi } from './utils/api'
 import Layout from './components/Layout'
 import Dashboard from './pages/Dashboard'
 import Devices from './pages/Devices'
@@ -40,11 +41,17 @@ import Login from './pages/Login'
 
 function AppInner() {
   useWebSocket()
-  const { theme } = useStore()
+  const { theme, appMode, setAppMode } = useStore()
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark')
   }, [theme])
+
+  useEffect(() => {
+    settingsApi.get().then(r => setAppMode(r.data.app?.mode)).catch(() => {})
+  }, [])
+
+  const isDesktop = appMode === 'desktop'
 
   return (
     <Layout>
@@ -58,7 +65,8 @@ function AppInner() {
         <Route path="/mibs" element={<MIBs />} />
         <Route path="/reports" element={<Reports />} />
         <Route path="/settings" element={<SettingsPage />} />
-        <Route path="/users" element={<Users />} />
+        {!isDesktop && <Route path="/users" element={<Users />} />}
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Layout>
   )

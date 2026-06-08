@@ -4,6 +4,7 @@ Handles: device discovery, polling, trap listening
 """
 import asyncio
 import logging
+import re
 import socket
 import struct
 from datetime import datetime
@@ -504,6 +505,27 @@ def _decode_snmp_string(val: str, fallback: str = "") -> str:
     return val.strip() or fallback
 
 
+_MAC_HEX = re.compile(r'^0x([0-9a-fA-F]{12})$', re.IGNORECASE)
+
+
+def _decode_mib_value(raw: Optional[str]) -> Optional[str]:
+    """Render a raw SNMP scalar from a vendor MIB table for display.
+
+    MacAddress/PhysAddress columns (yLEthMac, yLVAPConfigMac, ...) come back
+    as 6-byte hex strings (`0x0a1b2c3d4e5f`) — reformat those as colon-
+    separated MACs, the form every NMS/UI expects. Other OctetStrings get the
+    same hex→text decode as the standard interface walk; integers, enums, and
+    already-printable text pass through untouched.
+    """
+    if raw is None:
+        return None
+    mac = _MAC_HEX.match(raw.strip())
+    if mac:
+        h = mac.group(1)
+        return ":".join(h[i:i + 2] for i in range(0, 12, 2)).lower()
+    return _decode_snmp_string(raw, raw)
+
+
 async def list_device_interfaces(
     ip: str,
     community: str = "public",
@@ -533,6 +555,58 @@ async def list_device_interfaces(
         })
 
     return sorted(interfaces, key=lambda x: x["index"])
+
+
+async def walk_mib_table(
+    ip: str,
+    columns: List[Dict],
+    community: str = "public",
+    version: str = "v2c",
+    port: int = 161,
+    timeout: int = 5,
+    max_rows: int = 64,
+) -> List[Dict]:
+    """Walk a vendor-defined MIB table and return its rows keyed by column name.
+
+    The MIB-aware counterpart to list_device_interfaces: instead of the
+    hardcoded standard ifTable columns, it walks whatever column OIDs
+    mib_parser.extract_port_tables found (`columns` is `[{"name": "yLEthName",
+    "oid": "1.3.6.1.4.1.43265.100.1.3.2.1.1", "description": "..."}, ...]` in
+    the table's declared order).
+
+    SMIv2 table columns live at `<columnOid>.<rowIndex>` — exactly the layout
+    list_device_interfaces relies on for ifTable — so each column is walked as
+    its own subtree and rows are merged back together by their shared trailing
+    index. Returns e.g. `[{"index": 1, "yLEthName": "eth0",
+    "yLEthMac": "aa:bb:cc:dd:ee:ff", ...}, ...]`, sorted by index.
+    """
+    if not columns:
+        return []
+
+    walks = [
+        (col, await snmp_walk(ip, col["oid"], community, version, port, timeout, max_rows=max_rows))
+        for col in columns
+    ]
+
+    # A vendor table can have sparse columns (not every row reports every
+    # field), so collect indexes from every column rather than trusting the
+    # first one to enumerate all rows.
+    indexes = set()
+    for col, values in walks:
+        prefix = col["oid"].rstrip(".") + "."
+        for oid in values:
+            suffix = oid[len(prefix):]
+            if suffix.isdigit():
+                indexes.add(int(suffix))
+
+    rows = []
+    for idx in sorted(indexes):
+        row = {"index": idx}
+        for col, values in walks:
+            row[col["name"]] = _decode_mib_value(values.get(f'{col["oid"].rstrip(".")}.{idx}'))
+        rows.append(row)
+
+    return rows
 
 
 # ─── Trap Listener ────────────────────────────────────────────────────────────

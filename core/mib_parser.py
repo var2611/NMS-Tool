@@ -105,14 +105,36 @@ class MibParser:
             r'(\w[\w-]*)\s+OBJECT\s+IDENTIFIER\s*::=\s*\{([^}]+)\}',
             content, re.IGNORECASE
         )
-        
-        all_assignments = oid_assignments + simple_assignments
+
+        # Modern SMIv2 MIBs assign their module's own root OID via
+        # `myModule MODULE-IDENTITY ... ::= { parent N }` rather than a plain
+        # OBJECT IDENTIFIER — and that root is what every other OID in the
+        # module chains through, so missing it means NOTHING resolves (this is
+        # why real vendor MIBs were parsing to oid_count=0). Anchored to
+        # start-of-line so the lazy `.*?` can't run from the `IMPORTS
+        # MODULE-IDENTITY, OBJECT-TYPE, ... FROM SNMPv2-SMI` clause — that
+        # mentions the same bare keyword as an imported symbol, not as a
+        # declaration, and spans into whatever `::= {...}` happens to follow.
+        module_identity_assignments = re.findall(
+            r'^[ \t]*(\w[\w-]*)[ \t]+MODULE-IDENTITY\b.*?::=\s*\{([^}]+)\}',
+            content, re.DOTALL | re.MULTILINE | re.IGNORECASE
+        )
+
+        all_assignments = oid_assignments + simple_assignments + module_identity_assignments
 
         # Build a name→numeric map from what we find
         name_map = {}
         for name, path in all_assignments:
             parts = path.strip().split()
             name_map[name] = parts
+
+        # Vendor MIBs aren't always internally consistent — e.g. one real-world
+        # file defines its enterprise root as `ylWiFi` but every other
+        # assignment in the module chains off `yLWiFi` (capital L), a name
+        # that's never actually defined. A strict-case lookup leaves the whole
+        # module unresolved over a single typo, so fall back to a
+        # case-insensitive match — the same leniency real MIB compilers use.
+        name_map_lower = {name.lower(): name for name in name_map}
 
         # Resolve to numeric OIDs
         known_bases = {
@@ -126,28 +148,28 @@ class MibParser:
             "experimental": "1.3.6.1.3",
             "private": "1.3.6.1.4",
         }
+        known_bases_lower = {k.lower(): v for k, v in known_bases.items()}
 
-        def resolve_path(parts):
+        def resolve_path(parts, _chain=frozenset()):
             if not parts:
                 return None
             base = parts[0]
             suffix = parts[1:]
+            base_lower = base.lower()
             if base in known_bases:
                 base_oid = known_bases[base]
-            elif base in name_map:
-                resolved = resolve_path(name_map[base])
+            elif base_lower in known_bases_lower:
+                base_oid = known_bases_lower[base_lower]
+            else:
+                canonical = base if base in name_map else name_map_lower.get(base_lower)
+                if canonical is None or canonical in _chain:
+                    return None  # unknown base, or a circular reference
+                resolved = resolve_path(name_map[canonical], _chain | {canonical})
                 if not resolved:
                     return None
                 base_oid = resolved
-            else:
-                return None
-            
-            num_parts = []
-            for p in suffix:
-                if p.isdigit():
-                    num_parts.append(p)
-                elif p in known_bases:
-                    pass  # skip
+
+            num_parts = [p for p in suffix if p.isdigit()]
             return base_oid + ("." + ".".join(num_parts) if num_parts else "")
 
         # Extract descriptions
@@ -175,6 +197,92 @@ class MibParser:
         }
 
 
+# ─── Table-aware parsing — vendor port/interface discovery ───────────────────
+#
+# The regex parser above only builds a flat {oid: name} map, which is enough to
+# label individual values but can't tell us "this group of OIDs forms a table
+# of ports". Vendor MIBs that expose per-port data (e.g. YLWIFI-MIB's Ethernet/
+# radio/VAP tables) describe each row's shape with the standard SMIv2 idiom:
+#
+#   yLEthTable OBJECT-TYPE       SYNTAX SEQUENCE OF YLEthEntry ...
+#   yLEthEntry OBJECT-TYPE       SYNTAX YLEthEntry  INDEX { ifIndex } ...
+#   YLEthEntry ::= SEQUENCE { yLEthName OCTET STRING, yLEthMac MacAddress, ... }
+#   yLEthName  OBJECT-TYPE ... ::= { yLEthEntry 1 }
+#   yLEthMac   OBJECT-TYPE ... ::= { yLEthEntry 2 }
+#
+# extract_port_tables() finds the `Xxx ::= SEQUENCE {...}` row definitions,
+# resolves each column name to its numeric OID via the flat map already built
+# by parse(), and keeps only the tables that "look like" interfaces/ports —
+# i.e. they pair a name-ish column with a status/identity-ish column, the same
+# shape as the standard ifTable (ifDescr + ifOperStatus).
+
+_SEQUENCE_PATTERN = re.compile(r'(\w[\w-]*)\s*::=\s*SEQUENCE\s*\{([^}]*)\}', re.DOTALL)
+
+_NAME_HINT   = re.compile(r'(?i)(name|descr|ssid|ifname|hostname)')
+_STATUS_HINT = re.compile(r'(?i)(status|state|oper|enable|conn|admin)')
+_IDENT_HINT  = re.compile(r'(?i)(mac|address|speed|rate|channel|freq|signal|rssi|port|radio|vlan|mtu)')
+_TABLE_HINT  = re.compile(r'(?i)(eth|radio|vap|wlan|wifi|port|interface|repeater|link)')
+
+
+def _sequence_fields(block: str) -> List[str]:
+    """Pull ordered column names out of a `Xxx ::= SEQUENCE { name Type, ... }` body."""
+    fields = []
+    for segment in block.split(","):
+        m = re.match(r'\s*(\w[\w-]*)', segment.strip())
+        if m:
+            fields.append(m.group(1))
+    return fields
+
+
+def _looks_like_port_table(entry_type: str, columns: List[Dict]) -> bool:
+    """Heuristic: does this row shape resemble an interface/port (à la ifTable)?
+
+    The row-type's own name must hint at being port/radio/link-ish first —
+    that's what separates `yLEthEntry` from e.g. `yLSysConfigEntry`, whose
+    columns (yLSysName, yLSysConfigTimeRebootEnable, ...) can otherwise trip
+    the same "has a name-ish column + has an enable/status flag" pattern that
+    genuine port tables show. Within a hinted table, require a name-ish column
+    (yLEthName, yLVAPConfigIfname, ...) plus either a status-ish column
+    (yLEthState, yLVAPConfigEnable, ...) or an identity-ish one (Mac, Channel,
+    Speed, ...).
+    """
+    if not _TABLE_HINT.search(entry_type):
+        return False
+    names = [c["name"] for c in columns]
+    has_name   = any(_NAME_HINT.search(n) for n in names)
+    has_status = any(_STATUS_HINT.search(n) for n in names)
+    has_ident  = any(_IDENT_HINT.search(n) for n in names)
+    return has_name and (has_status or has_ident)
+
+
+def extract_port_tables(content: str, parsed_oids: Dict[str, Dict]) -> List[Dict]:
+    """Detect vendor-defined interface/port tables inside a MIB's source text.
+
+    Returns a list of `{"table": "YLEthEntry", "columns": [{name, oid, description}]}`
+    — one entry per detected port-like table, columns in declaration order so
+    the first SNMP walk naturally aligns with the MIB's own row layout.
+    """
+    name_to_oid = {info["name"]: oid for oid, info in parsed_oids.items()}
+
+    tables = []
+    for entry_type, block in _SEQUENCE_PATTERN.findall(content):
+        if not entry_type.endswith(("Entry", "ENTRY")):
+            continue
+        columns = []
+        for fname in _sequence_fields(block):
+            oid = name_to_oid.get(fname)
+            if not oid:
+                continue
+            info = parsed_oids[oid]
+            columns.append({"name": fname, "oid": oid, "description": info.get("description", "")})
+        if len(columns) < 2:
+            continue
+        if _looks_like_port_table(entry_type, columns):
+            tables.append({"table": entry_type, "columns": columns})
+
+    return tables
+
+
 def load_mib_into_memory(parsed_oids: Dict[str, Dict]):
     """Add parsed OIDs to the in-memory map."""
     global _oid_map
@@ -198,17 +306,35 @@ def search_oids(query: str) -> List[Dict]:
     return results[:50]
 
 
+def decode_mib_bytes(data: bytes) -> str:
+    """Decode raw MIB file bytes, tolerating non-UTF-8 vendor encodings.
+
+    Most MIBs are plain ASCII/UTF-8, but some vendors (e.g. Chinese hardware
+    makers) ship MIBs in GB18030. Force-decoding those as UTF-8 with
+    `errors="ignore"` leaves the (pure-ASCII) OID structure intact but turns
+    every DESCRIPTION string into gibberish — the file "loads" but every
+    label reads as garbage. Try strict UTF-8 first (so well-formed files are
+    untouched), then GB18030, then fall back to Latin-1, which never raises.
+    """
+    for encoding in ("utf-8", "gb18030"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("latin-1", errors="ignore")
+
+
 async def save_mib_file(filename: str, content: bytes) -> Tuple[str, Dict]:
     """Save an uploaded MIB file and parse it."""
     mib_path = MIB_DIR / filename
     with open(mib_path, "wb") as f:
         f.write(content)
-    
+
     parser = MibParser()
-    text = content.decode("utf-8", errors="ignore")
+    text = decode_mib_bytes(content)
     result = parser.parse(text, filename)
     load_mib_into_memory(result["oids"])
-    
+
     return str(mib_path), result
 
 
@@ -216,20 +342,13 @@ def load_all_saved_mibs():
     """Load all saved MIB files on startup."""
     parser = MibParser()
     count = 0
-    for mib_file in MIB_DIR.glob("*.mib"):
-        try:
-            text = mib_file.read_text(errors="ignore")
-            result = parser.parse(text, mib_file.name)
-            load_mib_into_memory(result["oids"])
-            count += 1
-        except Exception as e:
-            logger.warning(f"Could not load MIB {mib_file.name}: {e}")
-    for mib_file in MIB_DIR.glob("*.my"):
-        try:
-            text = mib_file.read_text(errors="ignore")
-            result = parser.parse(text, mib_file.name)
-            load_mib_into_memory(result["oids"])
-            count += 1
-        except Exception as e:
-            logger.warning(f"Could not load MIB {mib_file.name}: {e}")
+    for pattern in ("*.mib", "*.my"):
+        for mib_file in MIB_DIR.glob(pattern):
+            try:
+                text = decode_mib_bytes(mib_file.read_bytes())
+                result = parser.parse(text, mib_file.name)
+                load_mib_into_memory(result["oids"])
+                count += 1
+            except Exception as e:
+                logger.warning(f"Could not load MIB {mib_file.name}: {e}")
     logger.info(f"Loaded {count} MIB files from disk")

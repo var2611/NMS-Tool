@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { devicesApi } from '../utils/api'
-import { Monitor, RefreshCw, Plus, Trash2, Radio, X, ChevronDown, ChevronUp, Info } from 'lucide-react'
+import { devicesApi, mibsApi } from '../utils/api'
+import { Monitor, RefreshCw, Plus, Trash2, Radio, X, ChevronDown, ChevronUp, Info, Pencil } from 'lucide-react'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 
@@ -35,17 +35,35 @@ const SNMP_SETUP = {
 const EMPTY_FORM = {
   ip_address: '', name: '', device_type: 'unknown',
   snmp_version: 'v2c', snmp_community: 'public',
-  snmp_port: 161, poll_interval: 300, notes: '',
+  snmp_port: 161, poll_interval: 300, notes: '', mib_id: '',
 }
 
-// ─── Add Device Modal ─────────────────────────────────────────────────────────
+// ─── Add / Edit Device Modal ──────────────────────────────────────────────────
 
-function AddDeviceModal({ onClose, onSaved }) {
-  const [form, setForm] = useState(EMPTY_FORM)
+function deviceToForm(device) {
+  return {
+    ip_address: device.ip_address || '',
+    name: device.name || '',
+    device_type: device.device_type || 'unknown',
+    snmp_version: device.snmp_version || 'v2c',
+    snmp_community: device.snmp_community || 'public',
+    snmp_port: device.snmp_port || 161,
+    poll_interval: device.poll_interval || 300,
+    notes: device.notes || '',
+    mib_id: device.mib_id != null ? String(device.mib_id) : '',
+  }
+}
+
+export function DeviceModal({ device, onClose, onSaved }) {
+  const isEdit = !!device
+  const [form, setForm] = useState(() => isEdit ? deviceToForm(device) : EMPTY_FORM)
   const [saving, setSaving] = useState(false)
   const [guideOpen, setGuideOpen] = useState(false)
+  const [mibs, setMibs] = useState([])
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
   const guide = SNMP_SETUP[form.device_type] || SNMP_SETUP.unknown
+
+  useEffect(() => { mibsApi.list().then(r => setMibs(r.data)).catch(() => {}) }, [])
 
   const submit = async (e) => {
     e.preventDefault()
@@ -53,14 +71,20 @@ function AddDeviceModal({ onClose, onSaved }) {
     if (!form.name.trim()) return toast.error('Device name is required')
     setSaving(true)
     try {
-      const res = await devicesApi.create({
-        ...form, snmp_port: Number(form.snmp_port), poll_interval: Number(form.poll_interval),
-      })
-      toast.success(`Device "${res.data.name}" added!`)
+      const payload = {
+        ...form,
+        snmp_port: Number(form.snmp_port),
+        poll_interval: Number(form.poll_interval),
+        mib_id: form.mib_id ? Number(form.mib_id) : null,
+      }
+      const res = isEdit
+        ? await devicesApi.update(device.id, payload)
+        : await devicesApi.create(payload)
+      toast.success(isEdit ? `Device "${res.data.name}" updated!` : `Device "${res.data.name}" added!`)
       onSaved(res.data)
       onClose()
     } catch (e) {
-      toast.error(e.response?.data?.detail || 'Could not add device')
+      toast.error(e.response?.data?.detail || (isEdit ? 'Could not update device' : 'Could not add device'))
     } finally { setSaving(false) }
   }
 
@@ -69,8 +93,8 @@ function AddDeviceModal({ onClose, onSaved }) {
       <div className="bg-white dark:bg-gray-900 rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between p-5 border-b border-gray-100 dark:border-gray-700">
           <div>
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Add Device Manually</h2>
-            <p className="text-xs text-gray-500 mt-0.5">Enter the device IP and SNMP credentials</p>
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">{isEdit ? 'Edit Device' : 'Add Device Manually'}</h2>
+            <p className="text-xs text-gray-500 mt-0.5">{isEdit ? `Update connection settings for ${device.name}` : 'Enter the device IP and SNMP credentials'}</p>
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800">
             <X size={18} className="text-gray-500" />
@@ -128,6 +152,15 @@ function AddDeviceModal({ onClose, onSaved }) {
               </div>
             </div>
           </div>
+          <div>
+            <label className="label">Vendor MIB <span className="text-xs text-gray-400 font-normal">(optional — enables auto port/interface discovery)</span></label>
+            <select className="input" value={form.mib_id} onChange={e => set('mib_id', e.target.value)}>
+              <option value="">No MIB — standard discovery only</option>
+              {mibs.map(m => (
+                <option key={m.id} value={m.id}>{m.name}{m.vendor ? ` — ${m.vendor}` : ''} ({m.oid_count} OIDs)</option>
+              ))}
+            </select>
+          </div>
           <div className="rounded-lg border border-teal-200 dark:border-teal-800 overflow-hidden">
             <button type="button" onClick={() => setGuideOpen(o => !o)}
               className="w-full flex items-center justify-between px-4 py-3 bg-teal-50 dark:bg-teal-900/20 hover:bg-teal-100 dark:hover:bg-teal-900/30 transition-colors text-left">
@@ -158,7 +191,8 @@ function AddDeviceModal({ onClose, onSaved }) {
           <div className="flex justify-end gap-3 pt-2">
             <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
             <button type="submit" disabled={saving} className="btn-primary flex items-center gap-2">
-              <Plus size={15} />{saving ? 'Adding...' : 'Add Device'}
+              {isEdit ? <Pencil size={15} /> : <Plus size={15} />}
+              {isEdit ? (saving ? 'Saving...' : 'Save Changes') : (saving ? 'Adding...' : 'Add Device')}
             </button>
           </div>
         </form>
@@ -175,6 +209,7 @@ export default function Devices() {
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('')
   const [showAdd, setShowAdd] = useState(false)
+  const [editingDevice, setEditingDevice] = useState(null)
 
   const load = async () => {
     try {
@@ -203,6 +238,10 @@ export default function Devices() {
     navigate(`/devices/${device.id}`)
   }
 
+  const onDeviceUpdated = (device) => {
+    setDevices(prev => prev.map(d => d.id === device.id ? device : d))
+  }
+
   useEffect(() => { load() }, [])
 
   const filtered = devices.filter(d =>
@@ -214,7 +253,10 @@ export default function Devices() {
 
   return (
     <div className="space-y-4 animate-fade-in">
-      {showAdd && <AddDeviceModal onClose={() => setShowAdd(false)} onSaved={onDeviceSaved} />}
+      {showAdd && <DeviceModal onClose={() => setShowAdd(false)} onSaved={onDeviceSaved} />}
+      {editingDevice && (
+        <DeviceModal device={editingDevice} onClose={() => setEditingDevice(null)} onSaved={onDeviceUpdated} />
+      )}
 
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Devices</h1>
@@ -271,12 +313,18 @@ export default function Devices() {
                 </span>
               )}
               <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                {/* Poll Now only for locally-owned devices — remote agents poll their own */}
+                {/* Poll Now / Edit only for locally-owned devices — remote agents own their own config */}
                 {d.source !== 'desktop_sync' && (
-                  <button onClick={e => pollNow(e, d.id)}
-                    className="p-1.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700" title="Poll now">
-                    <Radio size={14} className="text-teal-600" />
-                  </button>
+                  <>
+                    <button onClick={e => pollNow(e, d.id)}
+                      className="p-1.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700" title="Poll now">
+                      <Radio size={14} className="text-teal-600" />
+                    </button>
+                    <button onClick={e => { e.stopPropagation(); setEditingDevice(d) }}
+                      className="p-1.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700" title="Edit device">
+                      <Pencil size={14} className="text-gray-500" />
+                    </button>
+                  </>
                 )}
                 <button onClick={e => removeDevice(e, d.id)}
                   className="p-1.5 rounded hover:bg-red-100 dark:hover:bg-red-900/30" title="Remove">

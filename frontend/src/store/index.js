@@ -57,6 +57,13 @@ export const useStore = create((set, get) => ({
     set({ timezone: tz })
   },
 
+  // App mode (desktop/server) — cached to avoid nav flicker on reload, refreshed from backend at startup
+  appMode: localStorage.getItem('nms_app_mode') || null,
+  setAppMode: (mode) => {
+    if (mode) localStorage.setItem('nms_app_mode', mode)
+    set({ appMode: mode })
+  },
+
   sidebarOpen: true,
   toggleSidebar: () => set(state => ({ sidebarOpen: !state.sidebarOpen })),
 

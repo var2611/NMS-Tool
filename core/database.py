@@ -124,6 +124,9 @@ class Device(Base):
     # site_name: null for local devices; set to the desktop agent's site name for synced devices
     site_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
 
+    # Optional vendor MIB profile — drives MIB-aware port/interface discovery
+    mib_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("mib_files.id"), nullable=True)
+
     # Relationships
     metrics: Mapped[List["DeviceMetric"]] = relationship("DeviceMetric", back_populates="device", cascade="all, delete-orphan")
     alerts: Mapped[List["Alert"]] = relationship("Alert", back_populates="device", cascade="all, delete-orphan")
@@ -361,6 +364,7 @@ class SystemSetting(Base):
 _MIGRATIONS = [
     ("devices", "source",    "VARCHAR(50) DEFAULT 'manual'"),
     ("devices", "site_name", "VARCHAR(200)"),
+    ("devices", "mib_id",    "INTEGER"),
     ("users",   "full_name",     "VARCHAR(200)"),
     ("users",   "allowed_sites", "JSON" ),
 ]
@@ -374,6 +378,10 @@ async def _run_migrations(conn):
         dialect = sync_conn.dialect.name  # "sqlite" or "postgresql"
 
         # 1. Add missing columns
+        # NOTE: no explicit commit() here — `conn` belongs to the caller's
+        # `engine.begin()` transaction, which commits atomically on exit.
+        # Committing mid-loop closes that transaction early and makes every
+        # subsequent inspector call raise "Can't operate on closed transaction".
         for table, column, col_def in _MIGRATIONS:
             existing = {c["name"] for c in inspector.get_columns(table)}
             if column not in existing:
@@ -381,7 +389,6 @@ async def _run_migrations(conn):
                     sync_conn.execute(
                         text(f'ALTER TABLE {table} ADD COLUMN {column} {col_def}')
                     )
-                    sync_conn.commit()
                 except Exception:
                     pass
 
@@ -392,7 +399,6 @@ async def _run_migrations(conn):
                 sync_conn.execute(text(
                     "ALTER TABLE device_metrics ALTER COLUMN device_id DROP NOT NULL"
                 ))
-                sync_conn.commit()
             except Exception:
                 pass  # Already nullable or doesn't exist yet
 

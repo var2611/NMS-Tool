@@ -28,6 +28,7 @@ export const devicesApi = {
   create: (data) => api.post('/devices', data),
   update: (id, data) => api.put(`/devices/${id}`, data),
   delete: (id) => api.delete(`/devices/${id}`),
+  purge: (id) => api.delete(`/devices/${id}/purge`),
   poll: (id) => api.post(`/devices/${id}/poll`),
   metrics: (id, hours=24) => api.get(`/devices/${id}/metrics`, { params: { hours } }),
   summary: () => api.get('/devices/summary'),

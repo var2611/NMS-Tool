@@ -3,11 +3,12 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { devicesApi } from '../utils/api'
 import { useStore } from '../store'
 import { formatTs, chartLabel } from '../utils/timezone'
+import { DeviceModal } from './Devices'
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Legend, ReferenceLine
 } from 'recharts'
-import { ArrowLeft, Radio, Trash2, Wifi, ChevronDown, ChevronUp, RefreshCw } from 'lucide-react'
+import { ArrowLeft, Radio, Trash2, Wifi, ChevronDown, ChevronUp, RefreshCw, Pencil, AlertTriangle, X } from 'lucide-react'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 
@@ -153,6 +154,8 @@ function InterfacePanel({ device }) {
   const [open, setOpen] = useState(false)
   const [interfaces, setInterfaces] = useState([])
   const [monitored, setMonitored] = useState([])
+  const [mibName, setMibName] = useState(null)
+  const [mibTables, setMibTables] = useState([])
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
 
@@ -162,6 +165,8 @@ function InterfacePanel({ device }) {
       const res = await devicesApi.getInterfaces(device.id)
       setInterfaces(res.data.interfaces || [])
       setMonitored(res.data.monitored || [])
+      setMibName(res.data.mib_name || null)
+      setMibTables(res.data.mib_tables || [])
     } catch {
       toast.error('Could not fetch interfaces — check SNMP connectivity')
     } finally { setLoading(false) }
@@ -200,58 +205,161 @@ function InterfacePanel({ device }) {
       </button>
 
       {open && (
-        <div className="border-t border-gray-100 dark:border-gray-700 p-4">
+        <div className="border-t border-gray-100 dark:border-gray-700 p-4 space-y-4">
           {loading ? (
             <div className="flex justify-center py-6">
               <div className="w-6 h-6 border-2 border-teal-500 border-t-transparent rounded-full animate-spin" />
             </div>
-          ) : interfaces.length === 0 ? (
-            <div className="text-center py-4 space-y-2">
-              <p className="text-sm text-gray-500">No interfaces found</p>
-              <button onClick={load} className="text-xs text-teal-600 underline">Retry</button>
-            </div>
           ) : (
             <>
-              <p className="text-xs text-gray-500 mb-3">
-                Tick interfaces to track their bandwidth (Mbps) historically.
-                Bandwidth delta is computed between polls.
-              </p>
-              <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1">
-                {interfaces.map(iface => (
-                  <label key={iface.index}
-                    className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer border border-transparent hover:border-gray-200 dark:hover:border-gray-700 transition-colors">
-                    <input
-                      type="checkbox"
-                      checked={monitored.includes(iface.index)}
-                      onChange={() => toggle(iface.index)}
-                      className="w-3.5 h-3.5 rounded text-teal-600"
-                    />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-gray-700 dark:text-gray-300 truncate">{iface.name}</p>
-                      <p className="text-xs text-gray-400">
-                        {iface.speed_mbps > 0 ? `${iface.speed_mbps} Mbps  ·  ` : ''}
-                        <span className={iface.status === 'up' ? 'text-green-500' : 'text-gray-400'}>
-                          {iface.status}
-                        </span>
-                      </p>
+              {interfaces.length === 0 ? (
+                <div className="text-center py-4 space-y-2">
+                  <p className="text-sm text-gray-500">No interfaces found</p>
+                  <button onClick={load} className="text-xs text-teal-600 underline">Retry</button>
+                </div>
+              ) : (
+                <div>
+                  <p className="text-xs text-gray-500 mb-3">
+                    Tick interfaces to track their bandwidth (Mbps) historically.
+                    Bandwidth delta is computed between polls.
+                  </p>
+                  <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1">
+                    {interfaces.map(iface => (
+                      <label key={iface.index}
+                        className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer border border-transparent hover:border-gray-200 dark:hover:border-gray-700 transition-colors">
+                        <input
+                          type="checkbox"
+                          checked={monitored.includes(iface.index)}
+                          onChange={() => toggle(iface.index)}
+                          className="w-3.5 h-3.5 rounded text-teal-600"
+                        />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-gray-700 dark:text-gray-300 truncate">{iface.name}</p>
+                          <p className="text-xs text-gray-400">
+                            {iface.speed_mbps > 0 ? `${iface.speed_mbps} Mbps  ·  ` : ''}
+                            <span className={iface.status === 'up' ? 'text-green-500' : 'text-gray-400'}>
+                              {iface.status}
+                            </span>
+                          </p>
+                        </div>
+                        <span className={clsx('w-2 h-2 rounded-full flex-shrink-0',
+                          iface.status === 'up' ? 'bg-green-400' : 'bg-gray-300')} />
+                      </label>
+                    ))}
+                  </div>
+                  <div className="flex gap-2 mt-4">
+                    <button onClick={save} disabled={saving} className="btn-primary text-sm py-2 px-4">
+                      {saving ? 'Saving…' : 'Save selection'}
+                    </button>
+                    <button onClick={load} className="btn-secondary text-sm py-2 px-4 flex items-center gap-1.5">
+                      <RefreshCw size={12} /> Refresh list
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Vendor MIB-detected port/radio/VAP tables — read-only snapshot from the device's MIB profile */}
+              {mibTables.length > 0 && (
+                <div className={clsx('space-y-3', interfaces.length > 0 && 'pt-4 border-t border-gray-100 dark:border-gray-700')}>
+                  <p className="text-xs font-semibold text-gray-500 dark:text-gray-400">
+                    Vendor MIB Ports <span className="font-normal text-gray-400">— auto-detected via {mibName}</span>
+                  </p>
+                  {mibTables.map(t => (
+                    <div key={t.table} className="rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+                      <div className="bg-gray-50 dark:bg-gray-800 px-3 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-300 flex items-center justify-between">
+                        <span className="font-mono">{t.table}</span>
+                        <span className="text-gray-400 font-normal">{t.rows.length} row{t.rows.length === 1 ? '' : 's'}</span>
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="border-b border-gray-100 dark:border-gray-700 text-gray-400">
+                              <th className="text-left font-medium px-3 py-1.5">#</th>
+                              {t.columns.map(c => (
+                                <th key={c.name} className="text-left font-medium px-3 py-1.5 whitespace-nowrap" title={c.description}>{c.name}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {t.rows.map(row => (
+                              <tr key={row.index} className="border-b border-gray-50 dark:border-gray-800 last:border-0">
+                                <td className="px-3 py-1.5 text-gray-400 font-mono">{row.index}</td>
+                                {t.columns.map(c => (
+                                  <td key={c.name} className="px-3 py-1.5 font-mono text-gray-700 dark:text-gray-300 whitespace-nowrap">
+                                    {row[c.name] ?? '—'}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
-                    <span className={clsx('w-2 h-2 rounded-full flex-shrink-0',
-                      iface.status === 'up' ? 'bg-green-400' : 'bg-gray-300')} />
-                  </label>
-                ))}
-              </div>
-              <div className="flex gap-2 mt-4">
-                <button onClick={save} disabled={saving} className="btn-primary text-sm py-2 px-4">
-                  {saving ? 'Saving…' : 'Save selection'}
-                </button>
-                <button onClick={load} className="btn-secondary text-sm py-2 px-4 flex items-center gap-1.5">
-                  <RefreshCw size={12} /> Refresh list
-                </button>
-              </div>
+                  ))}
+                </div>
+              )}
             </>
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+// ─── Purge confirmation (type device name to confirm) ────────────────────────
+
+function PurgeDeviceModal({ device, onClose, onPurged }) {
+  const [confirmText, setConfirmText] = useState('')
+  const [purging, setPurging] = useState(false)
+  const canConfirm = confirmText.trim() === device.name
+
+  const purge = async () => {
+    if (!canConfirm) return
+    setPurging(true)
+    try {
+      const res = await devicesApi.purge(device.id)
+      toast.success(res.data.message)
+      onPurged()
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Could not purge device')
+      setPurging(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
+      <div className="bg-white dark:bg-gray-900 rounded-xl shadow-2xl w-full max-w-md">
+        <div className="flex items-center justify-between p-5 border-b border-gray-100 dark:border-gray-700">
+          <div className="flex items-center gap-2">
+            <AlertTriangle size={18} className="text-red-500" />
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Permanently delete device</h2>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800">
+            <X size={18} className="text-gray-500" />
+          </button>
+        </div>
+        <div className="p-5 space-y-4">
+          <p className="text-sm text-gray-600 dark:text-gray-300">
+            This permanently erases <strong>"{device.name}"</strong> — the device record AND all of
+            its history (metrics, alerts, trap events). Unlike "Remove", this <strong>cannot be undone</strong>.
+          </p>
+          <div>
+            <label className="label">
+              Type <span className="font-mono font-semibold text-red-500">{device.name}</span> to confirm
+            </label>
+            <input className="input font-mono" value={confirmText}
+              onChange={e => setConfirmText(e.target.value)}
+              placeholder={device.name} autoFocus />
+          </div>
+          <div className="flex justify-end gap-3 pt-1">
+            <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
+            <button onClick={purge} disabled={!canConfirm || purging}
+              className="btn-danger flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed">
+              <Trash2 size={15} />{purging ? 'Deleting…' : 'Permanently delete'}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
@@ -261,12 +369,15 @@ function InterfacePanel({ device }) {
 export default function DeviceDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const { timezone } = useStore()
+  const { timezone, user } = useStore()
+  const isAdmin = user?.role === 'admin'
 
   const [device, setDevice] = useState(null)
   const [metrics, setMetrics] = useState([])
   const [loading, setLoading] = useState(true)
   const [hours, setHours] = useState(3)   // default 3h — smallest useful window, fastest load
+  const [showEdit, setShowEdit] = useState(false)
+  const [showPurge, setShowPurge] = useState(false)
 
   const loadDevice = useCallback(async () => {
     try {
@@ -337,6 +448,11 @@ export default function DeviceDetail() {
     navigate('/devices')
   }
 
+  const onPurged = () => {
+    setShowPurge(false)
+    navigate('/devices')
+  }
+
   // Collect interface indexes to chart:
   // • If user has selected monitored interfaces → show only those
   // • Otherwise → show all that appear in stored metrics
@@ -375,6 +491,13 @@ export default function DeviceDetail() {
 
   return (
     <div className="space-y-5 animate-fade-in">
+
+      {showEdit && (
+        <DeviceModal device={device} onClose={() => setShowEdit(false)} onSaved={(updated) => setDevice(updated)} />
+      )}
+      {showPurge && (
+        <PurgeDeviceModal device={device} onClose={() => setShowPurge(false)} onPurged={onPurged} />
+      )}
 
       {/* ── Header ── */}
       <div className="flex items-start justify-between">
@@ -426,15 +549,26 @@ export default function DeviceDetail() {
             <option value={72}>Last 3 days</option>
             <option value={168}>Last 7 days</option>
           </select>
-          {/* Poll Now only for locally-owned devices — remote agents own their own polling */}
+          {/* Poll Now / Edit only for locally-owned devices — remote agents own their own config */}
           {!isRemote && (
-            <button onClick={pollNow} className="btn-secondary flex items-center gap-1.5 text-sm">
-              <Radio size={14} /> Poll now
-            </button>
+            <>
+              <button onClick={pollNow} className="btn-secondary flex items-center gap-1.5 text-sm">
+                <Radio size={14} /> Poll now
+              </button>
+              <button onClick={() => setShowEdit(true)} className="btn-secondary flex items-center gap-1.5 text-sm">
+                <Pencil size={14} /> Edit
+              </button>
+            </>
           )}
           <button onClick={removeDevice} className="btn-danger flex items-center gap-1.5 text-sm">
             <Trash2 size={14} /> Remove
           </button>
+          {/* Purge — admin-only hard delete of the device row + all history */}
+          {isAdmin && (
+            <button onClick={() => setShowPurge(true)} className="btn-danger flex items-center gap-1.5 text-sm" title="Permanently delete device and all history">
+              <AlertTriangle size={14} /> Purge
+            </button>
+          )}
         </div>
       </div>
 
