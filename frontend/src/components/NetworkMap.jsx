@@ -18,16 +18,27 @@ function loadGoogleMapsScript(apiKey) {
   mapsPromise = new Promise((resolve, reject) => {
     const existing = document.querySelector('script[data-google-maps-loader]')
     if (existing) {
-      existing.addEventListener('load', () => resolve(window.google.maps))
-      existing.addEventListener('error', () => reject(new Error('Failed to load Google Maps script')))
+      // Tag already injected (e.g. HMR re-evaluated this module mid-load) —
+      // its callback global may be gone, so poll for readiness instead.
+      const poll = setInterval(() => {
+        if (window.google?.maps) { clearInterval(poll); resolve(window.google.maps) }
+      }, 100)
+      setTimeout(() => {
+        clearInterval(poll)
+        if (!window.google?.maps) reject(new Error('Failed to load Google Maps script'))
+      }, 15000)
       return
     }
+    // Google's recommended pattern: loading=async + a callback that fires once
+    // the API is fully ready (plain onload would race its internal bootstrap).
+    window.__nmsGoogleMapsReady = () => {
+      delete window.__nmsGoogleMapsReady
+      resolve(window.google.maps)
+    }
     const script = document.createElement('script')
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}`
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&loading=async&callback=__nmsGoogleMapsReady`
     script.async = true
-    script.defer = true
     script.dataset.googleMapsLoader = 'true'
-    script.onload = () => resolve(window.google.maps)
     script.onerror = () => reject(new Error('Failed to load Google Maps script'))
     document.head.appendChild(script)
   })
