@@ -25,7 +25,8 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"; }
 # ─── --install: register cron job ──────────────────────────────────────────
 if [ "${1:-}" = "--install" ]; then
     CRON_LINE="*/10 * * * * /usr/bin/flock -n $LOCK_FILE bash $REPO_DIR/scripts/server-auto-update.sh >> $LOG_FILE 2>&1"
-    ( crontab -l 2>/dev/null | grep -v "server-auto-update.sh" ; echo "$CRON_LINE" ) | crontab -
+    # `|| true`: grep exits 1 on an empty crontab, which set -e would fatal on
+    ( crontab -l 2>/dev/null | grep -v "server-auto-update.sh" || true ; echo "$CRON_LINE" ) | crontab -
     echo "Installed cron job (every 10 min):"
     echo "  $CRON_LINE"
     echo "Logs: $LOG_FILE"
