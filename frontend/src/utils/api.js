@@ -100,3 +100,9 @@ export const usersApi = {
   resetPassword: (id, new_password) => api.post(`/auth/users/${id}/reset-password`, { new_password }),
   delete:        (id) => api.delete(`/auth/users/${id}`),
 }
+
+export const updateApi = {
+  status: () => api.get('/update/status'),
+  check:  () => api.post('/update/check'),
+  apply:  () => api.post('/update/apply'),
+}

@@ -47,6 +47,10 @@ services:
     volumes:
       - nms_data:/app/data
       - nms_mibs:/app/data/mibs
+      # Shared with the host's auto-update script: the UI drops trigger files
+      # here and reads live update progress (status.json) written by the host —
+      # a bind mount (not a volume) so both sides see the same directory.
+      - ../data/update:/app/data/update
     # No host port mapping for 8765 — nginx reaches the API over the internal
     # Docker network (nms-api:8765). The raw API is never exposed publicly.
     # SNMP traps are received by desktop agents locally and synced over HTTPS,

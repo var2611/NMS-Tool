@@ -3,6 +3,7 @@ import { settingsApi } from '../utils/api'
 import api from '../utils/api'
 import { Settings, Cloud, Mail, Lock, Wifi, CheckCircle, XCircle, RefreshCw, Globe, Monitor, Activity, MapPin } from 'lucide-react'
 import { useStore } from '../store'
+import ServerUpdateSection from '../components/ServerUpdate'
 import { TIMEZONE_LIST } from '../utils/timezone'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
@@ -197,6 +198,9 @@ export default function SettingsPage() {
           {' '}· SNMP trap port: <span className="font-mono font-medium">{config?.snmp?.trap_port}</span>
         </p>
       </div>
+
+      {/* Server self-update — server mode + admin only (gated inside the component) */}
+      <ServerUpdateSection />
 
       {/* Cloud Sync — desktop mode only */}
       {isDesktop && (

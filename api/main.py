@@ -24,6 +24,7 @@ from core.database import AsyncSessionLocal
 
 from api.routes import devices, discovery, traps, alerts, mibs, reports, auth, settings as settings_router, ws_router
 from api.routes import sync as sync_router
+from api.routes import update as update_router
 
 logging.basicConfig(
     level=getattr(logging, settings.log_level),
@@ -109,6 +110,7 @@ app.include_router(mibs.router,           prefix=f"{API_PREFIX}/mibs",      tags
 app.include_router(reports.router,        prefix=f"{API_PREFIX}/reports",   tags=["Reports"])
 app.include_router(settings_router.router,prefix=f"{API_PREFIX}/settings",  tags=["Settings"])
 app.include_router(sync_router.router,    prefix=f"{API_PREFIX}/sync",      tags=["Sync"])
+app.include_router(update_router.router,  prefix=f"{API_PREFIX}/update",    tags=["Update"])
 app.include_router(ws_router.router,      prefix="",                        tags=["WebSocket"])
 
 
