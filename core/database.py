@@ -127,6 +127,11 @@ class Device(Base):
     # Optional vendor MIB profile — drives MIB-aware port/interface discovery
     mib_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("mib_files.id"), nullable=True)
 
+    # Optional map placement + paired device for the dashboard network map
+    latitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    longitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    associated_device_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("devices.id"), nullable=True)
+
     # Relationships
     metrics: Mapped[List["DeviceMetric"]] = relationship("DeviceMetric", back_populates="device", cascade="all, delete-orphan")
     alerts: Mapped[List["Alert"]] = relationship("Alert", back_populates="device", cascade="all, delete-orphan")
@@ -365,6 +370,9 @@ _MIGRATIONS = [
     ("devices", "source",    "VARCHAR(50) DEFAULT 'manual'"),
     ("devices", "site_name", "VARCHAR(200)"),
     ("devices", "mib_id",    "INTEGER"),
+    ("devices", "latitude",  "FLOAT"),
+    ("devices", "longitude", "FLOAT"),
+    ("devices", "associated_device_id", "INTEGER"),
     ("users",   "full_name",     "VARCHAR(200)"),
     ("users",   "allowed_sites", "JSON" ),
 ]

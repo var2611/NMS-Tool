@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { devicesApi, mibsApi } from '../utils/api'
-import { Monitor, RefreshCw, Plus, Trash2, Radio, X, ChevronDown, ChevronUp, Info, Pencil } from 'lucide-react'
+import { Monitor, RefreshCw, Plus, Trash2, Radio, X, ChevronDown, ChevronUp, Info, Pencil, RotateCcw } from 'lucide-react'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 
@@ -36,6 +36,7 @@ const EMPTY_FORM = {
   ip_address: '', name: '', device_type: 'unknown',
   snmp_version: 'v2c', snmp_community: 'public',
   snmp_port: 161, poll_interval: 300, notes: '', mib_id: '',
+  latitude: '', longitude: '', associated_device_id: '',
 }
 
 // ─── Add / Edit Device Modal ──────────────────────────────────────────────────
@@ -51,6 +52,9 @@ function deviceToForm(device) {
     poll_interval: device.poll_interval || 300,
     notes: device.notes || '',
     mib_id: device.mib_id != null ? String(device.mib_id) : '',
+    latitude: device.latitude != null ? String(device.latitude) : '',
+    longitude: device.longitude != null ? String(device.longitude) : '',
+    associated_device_id: device.associated_device_id != null ? String(device.associated_device_id) : '',
   }
 }
 
@@ -60,10 +64,12 @@ export function DeviceModal({ device, onClose, onSaved }) {
   const [saving, setSaving] = useState(false)
   const [guideOpen, setGuideOpen] = useState(false)
   const [mibs, setMibs] = useState([])
+  const [allDevices, setAllDevices] = useState([])
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
   const guide = SNMP_SETUP[form.device_type] || SNMP_SETUP.unknown
 
   useEffect(() => { mibsApi.list().then(r => setMibs(r.data)).catch(() => {}) }, [])
+  useEffect(() => { devicesApi.list({ limit: 200 }).then(r => setAllDevices(r.data)).catch(() => {}) }, [])
 
   const submit = async (e) => {
     e.preventDefault()
@@ -76,6 +82,9 @@ export function DeviceModal({ device, onClose, onSaved }) {
         snmp_port: Number(form.snmp_port),
         poll_interval: Number(form.poll_interval),
         mib_id: form.mib_id ? Number(form.mib_id) : null,
+        latitude: form.latitude !== '' ? Number(form.latitude) : null,
+        longitude: form.longitude !== '' ? Number(form.longitude) : null,
+        associated_device_id: form.associated_device_id ? Number(form.associated_device_id) : null,
       }
       const res = isEdit
         ? await devicesApi.update(device.id, payload)
@@ -161,6 +170,36 @@ export function DeviceModal({ device, onClose, onSaved }) {
               ))}
             </select>
           </div>
+          <div className="rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+            <div className="bg-gray-50 dark:bg-gray-800 px-4 py-2 text-xs font-semibold text-gray-500 uppercase tracking-wider">Map Placement (optional)</div>
+            <div className="p-4 space-y-3">
+              <p className="text-xs text-gray-500">
+                Place this device on the Dashboard network map and optionally pair it with an associated
+                device — a colored line is drawn between paired devices that both have coordinates.
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="label">Latitude</label>
+                  <input type="number" step="any" className="input font-mono" placeholder="19.0760"
+                    value={form.latitude} onChange={e => set('latitude', e.target.value)} />
+                </div>
+                <div>
+                  <label className="label">Longitude</label>
+                  <input type="number" step="any" className="input font-mono" placeholder="72.8777"
+                    value={form.longitude} onChange={e => set('longitude', e.target.value)} />
+                </div>
+              </div>
+              <div>
+                <label className="label">Associated Device <span className="text-xs text-gray-400 font-normal">(for drawing a link line)</span></label>
+                <select className="input" value={form.associated_device_id} onChange={e => set('associated_device_id', e.target.value)}>
+                  <option value="">None</option>
+                  {allDevices.filter(d => !device || d.id !== device.id).map(d => (
+                    <option key={d.id} value={d.id}>{d.name} ({d.ip_address})</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </div>
           <div className="rounded-lg border border-teal-200 dark:border-teal-800 overflow-hidden">
             <button type="button" onClick={() => setGuideOpen(o => !o)}
               className="w-full flex items-center justify-between px-4 py-3 bg-teal-50 dark:bg-teal-900/20 hover:bg-teal-100 dark:hover:bg-teal-900/30 transition-colors text-left">
@@ -206,6 +245,8 @@ export function DeviceModal({ device, onClose, onSaved }) {
 export default function Devices() {
   const navigate = useNavigate()
   const [devices, setDevices] = useState([])
+  const [deleted, setDeleted] = useState([])
+  const [showDeleted, setShowDeleted] = useState(false)
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('')
   const [showAdd, setShowAdd] = useState(false)
@@ -215,6 +256,8 @@ export default function Devices() {
     try {
       const res = await devicesApi.list({ limit: 200 })
       setDevices(res.data)
+      const del = await devicesApi.listDeleted()
+      setDeleted(del.data)
     } catch { toast.error('Could not load devices') }
     finally { setLoading(false) }
   }
@@ -227,10 +270,23 @@ export default function Devices() {
 
   const removeDevice = async (e, id) => {
     e.stopPropagation()
-    if (!confirm('Remove this device from monitoring?')) return
+    if (!confirm('Remove this device from monitoring? You can restore it later from "Removed devices".')) return
     await devicesApi.delete(id)
+    const removed = devices.find(x => x.id === id)
     setDevices(d => d.filter(x => x.id !== id))
-    toast.success('Device removed')
+    if (removed) setDeleted(prev => [...prev, removed])
+    toast.success('Device removed — restore it anytime from "Removed devices"')
+  }
+
+  const restoreDevice = async (id) => {
+    try {
+      const res = await devicesApi.restore(id)
+      setDeleted(prev => prev.filter(x => x.id !== id))
+      setDevices(prev => [...prev, res.data])
+      toast.success(`"${res.data.name}" restored`)
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Could not restore device')
+    }
   }
 
   const onDeviceSaved = (device) => {
@@ -342,6 +398,41 @@ export default function Devices() {
                 {' '}manually or use{' '}
                 <button onClick={() => navigate('/discovery')} className="text-teal-600 underline">Auto-Discover</button>.
               </p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Removed (soft-deleted) devices — recoverable */}
+      {!loading && deleted.length > 0 && (
+        <div className="card overflow-hidden">
+          <button onClick={() => setShowDeleted(o => !o)}
+            className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors text-left">
+            <div className="flex items-center gap-2">
+              <Trash2 size={14} className="text-gray-400" />
+              <span className="text-sm font-medium text-gray-600 dark:text-gray-300">
+                Removed devices ({deleted.length})
+              </span>
+              <span className="text-xs text-gray-400 hidden sm:block">— hidden from monitoring, can be restored</span>
+            </div>
+            {showDeleted ? <ChevronUp size={14} className="text-gray-400" /> : <ChevronDown size={14} className="text-gray-400" />}
+          </button>
+          {showDeleted && (
+            <div className="divide-y divide-gray-100 dark:divide-gray-700 border-t border-gray-100 dark:border-gray-700">
+              {deleted.map(d => (
+                <div key={d.id} className="flex items-center gap-4 p-4 opacity-70">
+                  <Monitor size={18} className="text-gray-400 flex-shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium text-gray-700 dark:text-gray-300 truncate">{d.name}</p>
+                    <p className="text-xs text-gray-500 font-mono">{d.ip_address}</p>
+                  </div>
+                  <span className="text-xs text-gray-400 hidden md:block w-24 truncate">{d.device_type}</span>
+                  <button onClick={() => restoreDevice(d.id)}
+                    className="btn-secondary text-xs py-1.5 px-3 flex items-center gap-1.5">
+                    <RotateCcw size={12} /> Restore
+                  </button>
+                </div>
+              ))}
             </div>
           )}
         </div>

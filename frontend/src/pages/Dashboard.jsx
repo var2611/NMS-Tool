@@ -7,6 +7,7 @@ import {
 } from 'recharts'
 import { Monitor, Printer, Wifi, AlertTriangle, Activity, CheckCircle, XCircle } from 'lucide-react'
 import clsx from 'clsx'
+import NetworkMap from '../components/NetworkMap'
 
 const STATUS_COLORS = {
   online: '#22c55e', offline: '#ef4444', warning: '#f59e0b', unknown: '#9ca3af'
@@ -226,6 +227,9 @@ export default function Dashboard() {
           </ResponsiveContainer>
         </div>
       </div>
+
+      {/* Network map */}
+      <NetworkMap devices={devices} />
 
       {/* Device list + Alert feed + Pie */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">

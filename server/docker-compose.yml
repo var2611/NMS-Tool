@@ -47,33 +47,15 @@ services:
     volumes:
       - nms_data:/app/data
       - nms_mibs:/app/data/mibs
-    ports:
-      - "8765:8765"       # API (nginx will proxy this)
-      - "162:162/udp"     # SNMP traps
+    # No host port mapping for 8765 — nginx reaches the API over the internal
+    # Docker network (nms-api:8765). The raw API is never exposed publicly.
+    # SNMP traps are received by desktop agents locally and synced over HTTPS,
+    # so the server does not need UDP 162 exposed. Re-add "162:162/udp" only if
+    # devices on THIS server's network send traps directly to it.
+    expose:
+      - "8765"
     networks:
       - nms-network
-    cap_add:
-      - NET_BIND_SERVICE  # allows binding port 162 without root
-
-  # ─── frp Tunnel Client ───────────────────────────────────────────────
-  # Exposes NMS to the internet via your relay server (13.207.180.88).
-  # Access: http://13.207.180.88:18765
-  #
-  # Control:
-  #   docker compose stop   frpc-tunnel   ← take offline
-  #   docker compose start  frpc-tunnel   ← bring back
-  #   docker compose rm -f  frpc-tunnel   ← remove completely
-  frpc-tunnel:
-    image: snowdreamtech/frpc:0.61.1
-    container_name: nms-frpc-tunnel
-    restart: unless-stopped
-    volumes:
-      - ./frpc.toml:/etc/frp/frpc.toml:ro
-    networks:
-      - nms-network
-    depends_on:
-      - nms-api
-      - nginx
 
   # ─── Nginx Reverse Proxy ──────────────────────────────────────────────
   nginx:
@@ -87,7 +69,8 @@ services:
       - "443:443"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./ssl:/etc/nginx/ssl:ro          # Mount your SSL certs here
+      - /etc/letsencrypt:/etc/letsencrypt:ro     # Let's Encrypt certs
+      - /var/www/certbot:/var/www/certbot:ro     # ACME challenge webroot
       - nms_static:/var/www/static:ro
     networks:
       - nms-network

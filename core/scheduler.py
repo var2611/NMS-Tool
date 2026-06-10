@@ -9,6 +9,7 @@ from core.snmp_engine import poll_device, ping_latency
 from core.alert_engine import evaluate_metrics, broadcast_ws
 from core.database import AsyncSessionLocal, Device, DeviceMetric, DeviceStatus, SystemSetting
 from core.sync_agent import sync_agent
+from core.mib_metrics import collect_monitored_mib_metrics
 from sqlalchemy import select, delete
 
 logger = logging.getLogger(__name__)
@@ -221,6 +222,14 @@ class PollingScheduler:
                 custom["ping_ms"] = ping_ms
             if iface_metrics:
                 custom["interfaces"] = iface_metrics
+
+            if device.mib_id and (device.tags or {}).get("monitored_mib_metrics"):
+                try:
+                    mib_metrics = await collect_monitored_mib_metrics(device, session)
+                    if mib_metrics:
+                        custom["mib_metrics"] = mib_metrics
+                except Exception as e:
+                    logger.warning(f"MIB metric collection failed for device #{device_id}: {e}")
 
             # Save metric snapshot
             metric_row = DeviceMetric(

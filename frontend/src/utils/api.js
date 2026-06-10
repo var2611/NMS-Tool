@@ -29,11 +29,14 @@ export const devicesApi = {
   update: (id, data) => api.put(`/devices/${id}`, data),
   delete: (id) => api.delete(`/devices/${id}`),
   purge: (id) => api.delete(`/devices/${id}/purge`),
+  listDeleted: () => api.get('/devices/deleted'),
+  restore: (id) => api.post(`/devices/${id}/restore`),
   poll: (id) => api.post(`/devices/${id}/poll`),
   metrics: (id, hours=24) => api.get(`/devices/${id}/metrics`, { params: { hours } }),
   summary: () => api.get('/devices/summary'),
   getInterfaces: (id) => api.get(`/devices/${id}/interfaces`),
   saveInterfaces: (id, indexes) => api.post(`/devices/${id}/interfaces`, { indexes }),
+  saveMibMetrics: (id, metrics) => api.post(`/devices/${id}/mib-metrics`, { metrics }),
 }
 
 export const discoveryApi = {
@@ -82,6 +85,7 @@ export const settingsApi = {
   testSync: () => api.post('/settings/sync/test'),
   testSmtp: (data) => api.post('/settings/smtp/test', data),
   saveSnmp: (data) => api.put('/settings/snmp', data),
+  saveCustom: (key, value) => api.put(`/settings/custom/${encodeURIComponent(key)}`, null, { params: { value } }),
   syncSites: () => api.get('/sync/sites'),
   syncLog: (limit = 30) => api.get('/sync/log', { params: { limit } }),
   syncFailedQueue: () => api.get('/sync/queue/failed'),

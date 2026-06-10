@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { settingsApi } from '../utils/api'
 import api from '../utils/api'
-import { Settings, Cloud, Mail, Lock, Wifi, CheckCircle, XCircle, RefreshCw, Globe, Monitor, Activity } from 'lucide-react'
+import { Settings, Cloud, Mail, Lock, Wifi, CheckCircle, XCircle, RefreshCw, Globe, Monitor, Activity, MapPin } from 'lucide-react'
 import { useStore } from '../store'
 import { TIMEZONE_LIST } from '../utils/timezone'
 import toast from 'react-hot-toast'
@@ -80,6 +80,10 @@ export default function SettingsPage() {
   const [snmpTimeout, setSnmpTimeout] = useState(5)
   const [snmpSaving, setSnmpSaving] = useState(false)
 
+  // Google Maps API key (Dashboard network map)
+  const [googleMapsApiKey, setGoogleMapsApiKey] = useState('')
+  const [mapKeySaving, setMapKeySaving] = useState(false)
+
   // Timezone (frontend display preference — stored in localStorage via Zustand)
   const { timezone, setTimezone } = useStore()
 
@@ -105,6 +109,9 @@ export default function SettingsPage() {
       if (r.data.snmp?.timeout) {
         setSnmpTimeout(r.data.snmp.timeout)
       }
+      if (r.data.custom?.google_maps_api_key) {
+        setGoogleMapsApiKey(r.data.custom.google_maps_api_key)
+      }
       // Auto-load sync log in desktop mode
       if (r.data.app?.mode === 'desktop') {
         loadSyncLog()
@@ -119,6 +126,15 @@ export default function SettingsPage() {
       toast.success(`SNMP timeout set to ${snmpTimeout}s`)
     } catch { toast.error('Failed to save SNMP timeout') }
     finally { setSnmpSaving(false) }
+  }
+
+  const saveMapKey = async () => {
+    setMapKeySaving(true)
+    try {
+      await settingsApi.saveCustom('google_maps_api_key', googleMapsApiKey)
+      toast.success('Google Maps API key saved')
+    } catch { toast.error('Failed to save Google Maps API key') }
+    finally { setMapKeySaving(false) }
   }
 
   const saveSync = async () => {
@@ -480,6 +496,28 @@ export default function SettingsPage() {
           <p className="text-xs text-gray-400 mt-2">
             Lower = faster polls but more timeouts on slow devices. Higher = more reliable but slower detection.
           </p>
+        </div>
+      </Section>
+
+      {/* Map */}
+      <Section title="Map" icon={MapPin}>
+        <p className="text-sm text-gray-500 mb-4">
+          Set a Google Maps API key to enable the network map on the Dashboard. It plots devices
+          by latitude/longitude and draws a colored line between each pair of associated devices.
+        </p>
+        <div className="max-w-md">
+          <label className="label">
+            Google Maps API Key
+            <span className="text-xs text-gray-400 font-normal ml-2">Needs the "Maps JavaScript API" enabled</span>
+          </label>
+          <div className="flex items-center gap-3 mt-2">
+            <input className="input flex-1" type="password" value={googleMapsApiKey}
+              onChange={e => setGoogleMapsApiKey(e.target.value)}
+              placeholder="AIza..." />
+            <button onClick={saveMapKey} disabled={mapKeySaving} className="btn-primary text-sm px-4 py-2 flex-shrink-0">
+              {mapKeySaving ? 'Saving…' : 'Save'}
+            </button>
+          </div>
         </div>
       </Section>
 

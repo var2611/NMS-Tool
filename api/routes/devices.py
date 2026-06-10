@@ -3,17 +3,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc, delete as sa_delete
 from typing import List, Optional
 from datetime import datetime
-from pathlib import Path
 from pydantic import BaseModel
 import logging
 
 from core.database import (
     get_db, Device, DeviceMetric, DeviceStatus, DeviceType, SnmpVersion, User,
-    Alert, TrapEvent, SyncQueue, MibFile,
+    Alert, TrapEvent, SyncQueue,
 )
 from core.scheduler import scheduler
-from core.snmp_engine import list_device_interfaces, walk_mib_table
-from core.mib_parser import MibParser, extract_port_tables, decode_mib_bytes
+from core.snmp_engine import list_device_interfaces
+from core.mib_metrics import walk_device_mib_tables
 from api.routes.auth import get_current_user, require_admin
 
 logger = logging.getLogger(__name__)
@@ -33,6 +32,9 @@ class DeviceCreate(BaseModel):
     notes: Optional[str] = None
     tags: Optional[dict] = None
     mib_id: Optional[int] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    associated_device_id: Optional[int] = None
 
 class DeviceUpdate(BaseModel):
     name: Optional[str] = None
@@ -47,6 +49,11 @@ class DeviceUpdate(BaseModel):
     # Optional[int] with explicit-unset detection (see update_device) — sending
     # `mib_id: null` clears the MIB association instead of being ignored.
     mib_id: Optional[int] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    # Optional[int] with explicit-unset detection (see update_device) — sending
+    # `associated_device_id: null` clears the pairing instead of being ignored.
+    associated_device_id: Optional[int] = None
 
 class DeviceOut(BaseModel):
     id: int
@@ -75,6 +82,10 @@ class DeviceOut(BaseModel):
     created_at: datetime
     # Vendor MIB profile (drives MIB-aware port discovery)
     mib_id: Optional[int] = None
+    # Map placement + paired device (dashboard network map)
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    associated_device_id: Optional[int] = None
     # Origin
     source: Optional[str] = "manual"
     site_name: Optional[str] = None
@@ -157,6 +168,28 @@ async def device_summary(db: AsyncSession = Depends(get_db)):
     }
 
 
+@router.get("/deleted", response_model=List[DeviceOut])
+async def list_deleted_devices(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Soft-deleted devices (Remove button) — recoverable via POST /{id}/restore."""
+    q = select(Device).where(Device.is_active == False)
+
+    # Same multi-tenant visibility rules as the active list
+    if user.role != "admin":
+        allowed = user.allowed_sites or []
+        if allowed:
+            q = q.where(
+                (Device.site_name.in_(allowed)) | (Device.source != "desktop_sync")
+            )
+        else:
+            q = q.where(Device.source != "desktop_sync")
+
+    result = await db.execute(q.order_by(Device.name))
+    return result.scalars().all()
+
+
 @router.get("/{device_id}", response_model=DeviceOut)
 async def get_device(device_id: int, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Device).where(Device.id == device_id))
@@ -168,11 +201,24 @@ async def get_device(device_id: int, db: AsyncSession = Depends(get_db)):
 
 @router.post("", response_model=DeviceOut, status_code=201)
 async def create_device(data: DeviceCreate, db: AsyncSession = Depends(get_db)):
-    # Check duplicate IP
+    # Check duplicate IP — a soft-deleted device still owns its IP, so point the
+    # user at the recovery flow instead of a dead-end "already exists".
     existing = await db.execute(select(Device).where(Device.ip_address == data.ip_address))
-    if existing.scalar_one_or_none():
+    existing_device = existing.scalar_one_or_none()
+    if existing_device:
+        if not existing_device.is_active:
+            raise HTTPException(
+                400,
+                f"Device with IP {data.ip_address} was removed earlier — "
+                f"restore it from \"Removed devices\" instead of re-adding"
+            )
         raise HTTPException(400, f"Device with IP {data.ip_address} already exists")
-    
+
+    if data.associated_device_id is not None:
+        assoc = await db.execute(select(Device).where(Device.id == data.associated_device_id))
+        if not assoc.scalar_one_or_none():
+            raise HTTPException(400, "Associated device not found")
+
     device = Device(**data.model_dump(), source="manual")
     db.add(device)
     await db.commit()
@@ -207,12 +253,24 @@ async def update_device(device_id: int, data: DeviceUpdate, db: AsyncSession = D
     mib_id_sent = "mib_id" in data.model_fields_set
     mib_id_value = data.mib_id
 
+    # Same explicit-unset handling for associated_device_id (clearing a pairing).
+    assoc_sent = "associated_device_id" in data.model_fields_set
+    assoc_value = data.associated_device_id
+    if assoc_sent and assoc_value is not None:
+        if assoc_value == device_id:
+            raise HTTPException(400, "A device cannot be associated with itself")
+        assoc = await db.execute(select(Device).where(Device.id == assoc_value))
+        if not assoc.scalar_one_or_none():
+            raise HTTPException(400, "Associated device not found")
+
     for field, value in data.model_dump(exclude_none=True).items():
-        if field == "mib_id":
+        if field in ("mib_id", "associated_device_id"):
             continue
         setattr(device, field, value)
     if mib_id_sent:
         device.mib_id = mib_id_value
+    if assoc_sent:
+        device.associated_device_id = assoc_value
 
     device.updated_at = datetime.utcnow()
     await db.commit()
@@ -237,6 +295,38 @@ async def delete_device(device_id: int, db: AsyncSession = Depends(get_db)):
     await sync_agent.queue_entity("device", device_id, "delete", {"ip_address": ip_address})
 
     return {"message": "Device removed"}
+
+
+@router.post("/{device_id}/restore", response_model=DeviceOut)
+async def restore_device(device_id: int, db: AsyncSession = Depends(get_db)):
+    """Recover a soft-deleted device — undoes the Remove button."""
+    result = await db.execute(select(Device).where(Device.id == device_id))
+    device = result.scalar_one_or_none()
+    if not device:
+        raise HTTPException(404, "Device not found")
+    if device.is_active:
+        raise HTTPException(400, "Device is not deleted")
+
+    device.is_active = True
+    device.updated_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(device)
+
+    # Re-announce to the cloud — the soft delete queued a "delete", so without
+    # this the device would stay missing on the server until its next update.
+    from core.sync_agent import sync_agent
+    await sync_agent.queue_entity("device", device.id, "create", {
+        "name":           device.name,
+        "ip_address":     device.ip_address,
+        "device_type":    device.device_type.value if device.device_type else "unknown",
+        "status":         device.status.value if device.status else "unknown",
+        "snmp_community": device.snmp_community,
+        "snmp_port":      device.snmp_port,
+        "poll_interval":  device.poll_interval,
+        "notes":          device.notes,
+    })
+
+    return device
 
 
 @router.delete("/{device_id}/purge")
@@ -331,6 +421,7 @@ async def get_metrics(
             # custom_metrics carries ping_ms and per-interface bandwidth
             "ping_ms": (m.custom_metrics or {}).get("ping_ms"),
             "interfaces": (m.custom_metrics or {}).get("interfaces", {}),
+            "mib_metrics": (m.custom_metrics or {}).get("mib_metrics", {}),
         }
         for m in metrics
     ]
@@ -342,49 +433,15 @@ class MonitoredInterfacesRequest(BaseModel):
     indexes: List[int]  # interface indexes to monitor
 
 
-async def _walk_device_mib_tables(device: Device, db: AsyncSession):
-    """Detect and walk the vendor port/interface tables defined by a device's
-    attached MIB profile (e.g. YLWIFI-MIB's Ethernet/radio/VAP/repeater
-    tables) — the MIB-aware complement to the standard ifTable walk above.
+class MibMetricSelection(BaseModel):
+    table: str
+    index: int
+    column: str
+    label: str
 
-    Best-effort by design: a missing/unparseable MIB or a failed table walk
-    must never break the standard interface list, so every failure here is
-    swallowed (and logged) rather than raised. Returns `(mib_name, tables)`,
-    where `tables` is `[{"table", "columns", "rows"}, ...]` for whichever
-    detected tables actually returned data.
-    """
-    mib = (await db.execute(select(MibFile).where(MibFile.id == device.mib_id))).scalar_one_or_none()
-    if not mib:
-        return None, []
 
-    try:
-        text = decode_mib_bytes(Path(mib.file_path).read_bytes())
-        parsed = MibParser().parse(text, mib.filename)
-        port_tables = extract_port_tables(text, parsed["oids"])
-    except Exception as e:
-        logger.warning(f"Could not parse MIB #{mib.id} ({mib.filename}) for device #{device.id}: {e}")
-        return mib.name, []
-
-    tables = []
-    for t in port_tables:
-        try:
-            rows = await walk_mib_table(
-                device.ip_address, t["columns"],
-                device.snmp_community or "public",
-                device.snmp_version.value if device.snmp_version else "v2c",
-                device.snmp_port or 161,
-            )
-        except Exception as e:
-            logger.warning(f"MIB table walk failed for {t['table']} on device #{device.id}: {e}")
-            continue
-        if rows:
-            tables.append({
-                "table": t["table"],
-                "columns": [{"name": c["name"], "description": c["description"]} for c in t["columns"]],
-                "rows": rows,
-            })
-
-    return mib.name, tables
+class MonitoredMibMetricsRequest(BaseModel):
+    metrics: List[MibMetricSelection]
 
 
 @router.get("/{device_id}/interfaces")
@@ -421,13 +478,14 @@ async def get_device_interfaces(device_id: int, db: AsyncSession = Depends(get_d
 
     mib_name, mib_tables = (None, [])
     if device.mib_id:
-        mib_name, mib_tables = await _walk_device_mib_tables(device, db)
+        mib_name, mib_tables = await walk_device_mib_tables(device, db)
 
     return {
         "interfaces": interfaces,
         "monitored": monitored,
         "mib_name": mib_name,
         "mib_tables": mib_tables,
+        "monitored_mib_metrics": (device.tags or {}).get("monitored_mib_metrics", []),
     }
 
 
@@ -452,3 +510,27 @@ async def set_monitored_interfaces(
     device.updated_at = datetime.utcnow()
     await db.commit()
     return {"monitored": data.indexes}
+
+
+@router.post("/{device_id}/mib-metrics")
+async def set_monitored_mib_metrics(
+    device_id: int,
+    data: MonitoredMibMetricsRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Save which vendor-MIB table cells to poll and chart like interface bandwidth."""
+    result = await db.execute(select(Device).where(Device.id == device_id))
+    device = result.scalar_one_or_none()
+    if not device:
+        raise HTTPException(404, "Device not found")
+    if device.source == "desktop_sync":
+        raise HTTPException(
+            409,
+            f"Interface monitoring is managed by the '{device.site_name}' agent, not the server"
+        )
+
+    metrics = [m.model_dump() for m in data.metrics]
+    device.tags = {**(device.tags or {}), "monitored_mib_metrics": metrics}
+    device.updated_at = datetime.utcnow()
+    await db.commit()
+    return {"monitored_mib_metrics": metrics}

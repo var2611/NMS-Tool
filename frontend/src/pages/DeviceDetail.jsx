@@ -150,12 +150,34 @@ function MetricChart({ title, data, dataKeys, colors, unit = '', height = 120, h
 
 // ─── Interface management ─────────────────────────────────────────────────────
 
-function InterfacePanel({ device }) {
+function isNumericColumn(table, columnName) {
+  const values = table.rows
+    .map(r => r[columnName])
+    .filter(v => v != null && String(v).trim() !== '')
+  if (values.length === 0) return false
+  return values.every(v => Number.isFinite(Number(v)))
+}
+
+function rowDisplayName(table, row) {
+  const nameCol = table.columns.find(c => /name|descr|ssid|ifname|hostname/i.test(c.name))
+  if (nameCol) {
+    const v = row[nameCol.name]
+    if (v != null && String(v).trim() !== '') return String(v)
+  }
+  return `Row ${row.index}`
+}
+
+function mibMetricKey(table, index, column) {
+  return `${table}|${index}|${column}`
+}
+
+function InterfacePanel({ device, onDeviceUpdate }) {
   const [open, setOpen] = useState(false)
   const [interfaces, setInterfaces] = useState([])
   const [monitored, setMonitored] = useState([])
   const [mibName, setMibName] = useState(null)
   const [mibTables, setMibTables] = useState([])
+  const [monitoredMib, setMonitoredMib] = useState([])
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
 
@@ -167,6 +189,7 @@ function InterfacePanel({ device }) {
       setMonitored(res.data.monitored || [])
       setMibName(res.data.mib_name || null)
       setMibTables(res.data.mib_tables || [])
+      setMonitoredMib(res.data.monitored_mib_metrics || [])
     } catch {
       toast.error('Could not fetch interfaces — check SNMP connectivity')
     } finally { setLoading(false) }
@@ -175,14 +198,27 @@ function InterfacePanel({ device }) {
   const toggle = (idx) =>
     setMonitored(prev => prev.includes(idx) ? prev.filter(i => i !== idx) : [...prev, idx])
 
+  const toggleMibMetric = (table, row, column) => {
+    const key = mibMetricKey(table.table, row.index, column)
+    setMonitoredMib(prev => {
+      const exists = prev.some(m => mibMetricKey(m.table, m.index, m.column) === key)
+      if (exists) return prev.filter(m => mibMetricKey(m.table, m.index, m.column) !== key)
+      return [...prev, { table: table.table, index: row.index, column, label: `${rowDisplayName(table, row)} — ${column}` }]
+    })
+  }
+
   const save = async () => {
     setSaving(true)
     try {
       await devicesApi.saveInterfaces(device.id, monitored)
-      toast.success('Monitored interfaces saved')
+      await devicesApi.saveMibMetrics(device.id, monitoredMib)
+      await onDeviceUpdate?.()
+      toast.success('Monitoring selection saved')
     } catch { toast.error('Save failed') }
     finally { setSaving(false) }
   }
+
+  const trackedCount = monitored.length + monitoredMib.length
 
   return (
     <div className="card overflow-hidden">
@@ -195,9 +231,9 @@ function InterfacePanel({ device }) {
           <span className="font-medium text-gray-800 dark:text-gray-200 text-sm">
             Interface Monitoring
           </span>
-          {monitored.length > 0 && (
+          {trackedCount > 0 && (
             <span className="text-xs bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300 px-2 py-0.5 rounded-full">
-              {monitored.length} tracked
+              {trackedCount} tracked
             </span>
           )}
         </div>
@@ -247,55 +283,85 @@ function InterfacePanel({ device }) {
                       </label>
                     ))}
                   </div>
-                  <div className="flex gap-2 mt-4">
-                    <button onClick={save} disabled={saving} className="btn-primary text-sm py-2 px-4">
-                      {saving ? 'Saving…' : 'Save selection'}
-                    </button>
-                    <button onClick={load} className="btn-secondary text-sm py-2 px-4 flex items-center gap-1.5">
-                      <RefreshCw size={12} /> Refresh list
-                    </button>
-                  </div>
                 </div>
               )}
 
-              {/* Vendor MIB-detected port/radio/VAP tables — read-only snapshot from the device's MIB profile */}
+              {/* Vendor MIB-detected port/radio/VAP tables — tick numeric cells to chart them */}
               {mibTables.length > 0 && (
                 <div className={clsx('space-y-3', interfaces.length > 0 && 'pt-4 border-t border-gray-100 dark:border-gray-700')}>
-                  <p className="text-xs font-semibold text-gray-500 dark:text-gray-400">
-                    Vendor MIB Ports <span className="font-normal text-gray-400">— auto-detected via {mibName}</span>
-                  </p>
-                  {mibTables.map(t => (
-                    <div key={t.table} className="rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
-                      <div className="bg-gray-50 dark:bg-gray-800 px-3 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-300 flex items-center justify-between">
-                        <span className="font-mono">{t.table}</span>
-                        <span className="text-gray-400 font-normal">{t.rows.length} row{t.rows.length === 1 ? '' : 's'}</span>
-                      </div>
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-xs">
-                          <thead>
-                            <tr className="border-b border-gray-100 dark:border-gray-700 text-gray-400">
-                              <th className="text-left font-medium px-3 py-1.5">#</th>
-                              {t.columns.map(c => (
-                                <th key={c.name} className="text-left font-medium px-3 py-1.5 whitespace-nowrap" title={c.description}>{c.name}</th>
-                              ))}
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {t.rows.map(row => (
-                              <tr key={row.index} className="border-b border-gray-50 dark:border-gray-800 last:border-0">
-                                <td className="px-3 py-1.5 text-gray-400 font-mono">{row.index}</td>
+                  <div>
+                    <p className="text-xs font-semibold text-gray-500 dark:text-gray-400">
+                      Vendor MIB Ports <span className="font-normal text-gray-400">— auto-detected via {mibName}</span>
+                    </p>
+                    <p className="text-xs text-gray-400 mt-0.5">Tick numeric values to track them historically in charts below.</p>
+                  </div>
+                  {mibTables.map(t => {
+                    const numericCols = new Set(t.columns.filter(c => isNumericColumn(t, c.name)).map(c => c.name))
+                    return (
+                      <div key={t.table} className="rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+                        <div className="bg-gray-50 dark:bg-gray-800 px-3 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-300 flex items-center justify-between">
+                          <span className="font-mono">{t.table}</span>
+                          <span className="text-gray-400 font-normal">{t.rows.length} row{t.rows.length === 1 ? '' : 's'}</span>
+                        </div>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-xs">
+                            <thead>
+                              <tr className="border-b border-gray-100 dark:border-gray-700 text-gray-400">
+                                <th className="text-left font-medium px-3 py-1.5">#</th>
                                 {t.columns.map(c => (
-                                  <td key={c.name} className="px-3 py-1.5 font-mono text-gray-700 dark:text-gray-300 whitespace-nowrap">
-                                    {row[c.name] ?? '—'}
-                                  </td>
+                                  <th key={c.name} className="text-left font-medium px-3 py-1.5 whitespace-nowrap" title={c.description}>{c.name}</th>
                                 ))}
                               </tr>
-                            ))}
-                          </tbody>
-                        </table>
+                            </thead>
+                            <tbody>
+                              {t.rows.map(row => (
+                                <tr key={row.index} className="border-b border-gray-50 dark:border-gray-800 last:border-0">
+                                  <td className="px-3 py-1.5 text-gray-400 font-mono">{row.index}</td>
+                                  {t.columns.map(c => {
+                                    const value = row[c.name] ?? '—'
+                                    if (!numericCols.has(c.name)) {
+                                      return (
+                                        <td key={c.name} className="px-3 py-1.5 font-mono text-gray-700 dark:text-gray-300 whitespace-nowrap">
+                                          {value}
+                                        </td>
+                                      )
+                                    }
+                                    const key = mibMetricKey(t.table, row.index, c.name)
+                                    const checked = monitoredMib.some(m => mibMetricKey(m.table, m.index, m.column) === key)
+                                    return (
+                                      <td key={c.name} className="px-3 py-1.5 font-mono text-gray-700 dark:text-gray-300 whitespace-nowrap">
+                                        <label className="flex items-center gap-1.5 cursor-pointer">
+                                          <input
+                                            type="checkbox"
+                                            checked={checked}
+                                            onChange={() => toggleMibMetric(t, row, c.name)}
+                                            className="w-3 h-3 rounded text-teal-600"
+                                          />
+                                          {value}
+                                        </label>
+                                      </td>
+                                    )
+                                  })}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    )
+                  })}
+                </div>
+              )}
+
+              {/* Shared save/refresh footer — covers both interface and MIB metric selections */}
+              {(interfaces.length > 0 || mibTables.length > 0) && (
+                <div className="flex gap-2 pt-4 border-t border-gray-100 dark:border-gray-700">
+                  <button onClick={save} disabled={saving} className="btn-primary text-sm py-2 px-4">
+                    {saving ? 'Saving…' : 'Save monitoring selection'}
+                  </button>
+                  <button onClick={load} className="btn-secondary text-sm py-2 px-4 flex items-center gap-1.5">
+                    <RefreshCw size={12} /> Refresh list
+                  </button>
                 </div>
               )}
             </>
@@ -475,6 +541,17 @@ export default function DeviceDetail() {
         'Out Mbps': m.interfaces[idx]?.out_mbps ?? null,
       }))
   , [metrics])
+
+  // One row per poll for a single monitored MIB table cell, e.g. {table, index, column, label}
+  const mibMetricData = useCallback((entry) => {
+    const key = `${entry.table}|${entry.index}|${entry.column}`
+    return metrics.map(m => ({
+      ts: m.ts,
+      timestamp: m.timestamp,
+      label: m.label,
+      [entry.column]: m.mib_metrics?.[key] ?? null,
+    }))
+  }, [metrics])
 
   if (loading) return (
     <div className="flex justify-center items-center h-64">
@@ -667,6 +744,18 @@ export default function DeviceDetail() {
           })
         )}
 
+        {/* MIB metric charts — one per vendor-MIB cell the user opted into monitoring */}
+        {(device?.tags?.monitored_mib_metrics || []).map(entry => (
+          <MetricChart
+            key={`${entry.table}|${entry.index}|${entry.column}`}
+            title={entry.label}
+            data={mibMetricData(entry)}
+            dataKeys={[entry.column]}
+            colors={['#0ea5e9']}
+            unit="" hours={hours}
+          />
+        ))}
+
         {/* RF signal if present */}
         {metrics.some(m => m.signal_dbm != null) && (
           <MetricChart
@@ -682,7 +771,7 @@ export default function DeviceDetail() {
       {/* ── Interface management — local devices only ── */}
       {/* Remote devices: interface selection runs live SNMP from the owning
           agent, not the server. Showing it here would query an unreachable LAN. */}
-      {!isRemote && <InterfacePanel device={device} />}
+      {!isRemote && <InterfacePanel device={device} onDeviceUpdate={loadDevice} />}
 
       {/* ── Notes ── */}
       {device.notes && (
