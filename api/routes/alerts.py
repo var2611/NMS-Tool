@@ -29,13 +29,12 @@ async def list_alerts(
     
     if user.role != "admin":
         allowed = user.allowed_sites or []
+        if not allowed:
+            return []
         if settings.is_server:
             q = q.where(Device.site_name.in_(allowed))
         else:
-            if allowed:
-                q = q.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
-            else:
-                q = q.where(Device.source != "desktop_sync")
+            q = q.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
 
     if status:
         q = q.where(Alert.status == status)
@@ -73,19 +72,20 @@ async def alert_summary(
 
     if user.role != "admin":
         allowed = user.allowed_sites or []
+        if not allowed:
+            return {
+                "last_24h": 0,
+                "critical_24h": 0,
+                "unacknowledged": 0,
+            }
         if settings.is_server:
             q_total = q_total.where(Device.site_name.in_(allowed))
             q_critical = q_critical.where(Device.site_name.in_(allowed))
             q_new = q_new.where(Device.site_name.in_(allowed))
         else:
-            if allowed:
-                q_total = q_total.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
-                q_critical = q_critical.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
-                q_new = q_new.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
-            else:
-                q_total = q_total.where(Device.source != "desktop_sync")
-                q_critical = q_critical.where(Device.source != "desktop_sync")
-                q_new = q_new.where(Device.source != "desktop_sync")
+            q_total = q_total.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
+            q_critical = q_critical.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
+            q_new = q_new.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
 
     total = await db.execute(q_total)
     critical = await db.execute(q_critical)
@@ -112,6 +112,8 @@ async def acknowledge_alert(
     # Guard: check if allowed to view this device
     if user.role != "admin":
         allowed = user.allowed_sites or []
+        if not allowed:
+            raise HTTPException(403, "Access denied")
         res_dev = await db.execute(select(Device).where(Device.id == alert.device_id))
         device = res_dev.scalar_one_or_none()
         if device:
@@ -143,6 +145,8 @@ async def resolve_alert(
     # Guard: check if allowed to view this device
     if user.role != "admin":
         allowed = user.allowed_sites or []
+        if not allowed:
+            raise HTTPException(403, "Access denied")
         res_dev = await db.execute(select(Device).where(Device.id == alert.device_id))
         device = res_dev.scalar_one_or_none()
         if device:

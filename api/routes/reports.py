@@ -25,22 +25,26 @@ async def summary_report(
     
     if user.role != "admin":
         allowed = user.allowed_sites or []
+        if not allowed:
+            return {
+                "period_days": days,
+                "total_devices": 0,
+                "total_alerts": 0,
+                "critical_alerts": 0,
+                "total_traps": 0,
+                "alerts_by_day": [{"date": (datetime.utcnow().replace(hour=0,minute=0,second=0) - timedelta(days=days-i-1)).strftime("%Y-%m-%d"), "count": 0} for i in range(days)],
+                "generated_at": datetime.utcnow().isoformat(),
+            }
         if settings.is_server:
             q_devices = q_devices.where(Device.site_name.in_(allowed))
             q_alerts = q_alerts.where(Device.site_name.in_(allowed))
             q_critical = q_critical.where(Device.site_name.in_(allowed))
             q_traps = q_traps.where(Device.site_name.in_(allowed))
         else:
-            if allowed:
-                q_devices = q_devices.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
-                q_alerts = q_alerts.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
-                q_critical = q_critical.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
-                q_traps = q_traps.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
-            else:
-                q_devices = q_devices.where(Device.source != "desktop_sync")
-                q_alerts = q_alerts.where(Device.source != "desktop_sync")
-                q_critical = q_critical.where(Device.source != "desktop_sync")
-                q_traps = q_traps.where(Device.source != "desktop_sync")
+            q_devices = q_devices.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
+            q_alerts = q_alerts.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
+            q_critical = q_critical.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
+            q_traps = q_traps.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
 
     total_devices = await db.execute(q_devices)
     total_alerts = await db.execute(q_alerts)
@@ -60,10 +64,7 @@ async def summary_report(
             if settings.is_server:
                 q_day = q_day.where(Device.site_name.in_(allowed))
             else:
-                if allowed:
-                    q_day = q_day.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
-                else:
-                    q_day = q_day.where(Device.source != "desktop_sync")
+                q_day = q_day.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
                     
         count = await db.execute(q_day)
         alerts_by_day.append({"date": day_start.strftime("%Y-%m-%d"), "count": count.scalar() or 0})
@@ -87,13 +88,12 @@ async def uptime_report(
     q = select(Device).where(Device.is_active == True)
     if user.role != "admin":
         allowed = user.allowed_sites or []
+        if not allowed:
+            return []
         if settings.is_server:
             q = q.where(Device.site_name.in_(allowed))
         else:
-            if allowed:
-                q = q.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
-            else:
-                q = q.where(Device.source != "desktop_sync")
+            q = q.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
                 
     result = await db.execute(q)
     devices = result.scalars().all()

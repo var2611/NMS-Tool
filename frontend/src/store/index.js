@@ -12,7 +12,15 @@ export const useStore = create((set, get) => ({
   logout: () => {
     localStorage.removeItem('nms_token')
     localStorage.removeItem('nms_user')
-    set({ token: null, user: null })
+    set({
+      token: null,
+      user: null,
+      devices: [],
+      deviceSummary: { total: 0, online: 0, offline: 0, warning: 0, health_score: 0, by_type: {} },
+      alerts: [],
+      alertSummary: { last_24h: 0, critical_24h: 0, unacknowledged: 0 },
+      recentTraps: []
+    })
   },
 
   // Devices

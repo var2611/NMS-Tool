@@ -51,13 +51,12 @@ async def list_trap_events(
     
     if user.role != "admin":
         allowed = user.allowed_sites or []
+        if not allowed:
+            return []
         if settings.is_server:
             q = q.where(Device.site_name.in_(allowed))
         else:
-            if allowed:
-                q = q.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
-            else:
-                q = q.where(Device.source != "desktop_sync")
+            q = q.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
 
     if severity:
         q = q.where(TrapEvent.severity == severity)
@@ -94,16 +93,17 @@ async def trap_stats(
 
     if user.role != "admin":
         allowed = user.allowed_sites or []
+        if not allowed:
+            return {
+                "last_24h_total": 0,
+                "last_24h_critical": 0,
+            }
         if settings.is_server:
             q_total = q_total.where(Device.site_name.in_(allowed))
             q_critical = q_critical.where(Device.site_name.in_(allowed))
         else:
-            if allowed:
-                q_total = q_total.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
-                q_critical = q_critical.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
-            else:
-                q_total = q_total.where(Device.source != "desktop_sync")
-                q_critical = q_critical.where(Device.source != "desktop_sync")
+            q_total = q_total.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
+            q_critical = q_critical.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
 
     total = await db.execute(q_total)
     critical = await db.execute(q_critical)

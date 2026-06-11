@@ -14,6 +14,7 @@ from core.scheduler import scheduler
 from core.snmp_engine import list_device_interfaces
 from core.mib_metrics import walk_device_mib_tables
 from api.routes.auth import get_current_user, require_admin
+from core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +97,20 @@ class DeviceOut(BaseModel):
         from_attributes = True
 
 
+def check_device_access(device: Device, user: User) -> None:
+    if user.role == "admin":
+        return
+    allowed = user.allowed_sites or []
+    if not allowed:
+        raise HTTPException(403, "Access denied to this device")
+    if settings.is_server:
+        if device.site_name not in allowed:
+            raise HTTPException(403, "Access denied to this device")
+    else:
+        if device.source == "desktop_sync" and device.site_name not in allowed:
+            raise HTTPException(403, "Access denied to this device")
+
+
 # ─── Routes ───────────────────────────────────────────────────────────────────
 
 @router.get("", response_model=List[DeviceOut])
@@ -113,15 +128,14 @@ async def list_devices(
     # ── Multi-tenant filter ──────────────────────────────────────────────────
     if user.role != "admin":
         allowed = user.allowed_sites or []
+        if not allowed:
+            return []
         if settings.is_server:
             q = q.where(Device.site_name.in_(allowed))
         else:
-            if allowed:
-                q = q.where(
-                    (Device.site_name.in_(allowed)) | (Device.source != "desktop_sync")
-                )
-            else:
-                q = q.where(Device.source != "desktop_sync")
+            q = q.where(
+                (Device.site_name.in_(allowed)) | (Device.source != "desktop_sync")
+            )
 
     if status:
         q = q.where(Device.status == status)
@@ -153,6 +167,15 @@ async def device_summary(
 
     if user.role != "admin":
         allowed = user.allowed_sites or []
+        if not allowed:
+            return {
+                "total": 0,
+                "online": 0,
+                "offline": 0,
+                "warning": 0,
+                "health_score": 0,
+                "by_type": {},
+            }
         if settings.is_server:
             q_total = q_total.where(Device.site_name.in_(allowed))
             q_online = q_online.where(Device.site_name.in_(allowed))
@@ -160,18 +183,11 @@ async def device_summary(
             q_warning = q_warning.where(Device.site_name.in_(allowed))
             q_by_type = q_by_type.where(Device.site_name.in_(allowed))
         else:
-            if allowed:
-                q_total = q_total.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
-                q_online = q_online.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
-                q_offline = q_offline.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
-                q_warning = q_warning.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
-                q_by_type = q_by_type.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
-            else:
-                q_total = q_total.where(Device.source != "desktop_sync")
-                q_online = q_online.where(Device.source != "desktop_sync")
-                q_offline = q_offline.where(Device.source != "desktop_sync")
-                q_warning = q_warning.where(Device.source != "desktop_sync")
-                q_by_type = q_by_type.where(Device.source != "desktop_sync")
+            q_total = q_total.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
+            q_online = q_online.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
+            q_offline = q_offline.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
+            q_warning = q_warning.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
+            q_by_type = q_by_type.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
 
     total = await db.execute(q_total)
     online = await db.execute(q_online)
@@ -206,15 +222,14 @@ async def list_deleted_devices(
     # Same multi-tenant visibility rules as the active list
     if user.role != "admin":
         allowed = user.allowed_sites or []
+        if not allowed:
+            return []
         if settings.is_server:
             q = q.where(Device.site_name.in_(allowed))
         else:
-            if allowed:
-                q = q.where(
-                    (Device.site_name.in_(allowed)) | (Device.source != "desktop_sync")
-                )
-            else:
-                q = q.where(Device.source != "desktop_sync")
+            q = q.where(
+                (Device.site_name.in_(allowed)) | (Device.source != "desktop_sync")
+            )
 
     result = await db.execute(q.order_by(Device.name))
     return result.scalars().all()
@@ -232,20 +247,19 @@ async def get_device(
         raise HTTPException(404, "Device not found")
 
     # Enforce multi-tenant guard
-    if user.role != "admin":
-        allowed = user.allowed_sites or []
-        if settings.is_server:
-            if device.site_name not in allowed:
-                raise HTTPException(403, "Access denied to this device")
-        else:
-            if device.source == "desktop_sync" and device.site_name not in allowed:
-                raise HTTPException(403, "Access denied to this device")
+    check_device_access(device, user)
 
     return device
 
 
 @router.post("", response_model=DeviceOut, status_code=201)
-async def create_device(data: DeviceCreate, db: AsyncSession = Depends(get_db)):
+async def create_device(
+    data: DeviceCreate,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    if user.role not in ("admin", "operator"):
+        raise HTTPException(403, "Access denied: viewer role is read-only")
     # Check duplicate IP — a soft-deleted device still owns its IP, so point the
     # user at the recovery flow instead of a dead-end "already exists".
     existing = await db.execute(select(Device).where(Device.ip_address == data.ip_address))
@@ -279,7 +293,14 @@ async def create_device(data: DeviceCreate, db: AsyncSession = Depends(get_db)):
 
 
 @router.put("/{device_id}", response_model=DeviceOut)
-async def update_device(device_id: int, data: DeviceUpdate, db: AsyncSession = Depends(get_db)):
+async def update_device(
+    device_id: int,
+    data: DeviceUpdate,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    if user.role not in ("admin", "operator"):
+        raise HTTPException(403, "Access denied: viewer role is read-only")
     result = await db.execute(select(Device).where(Device.id == device_id))
     device = result.scalar_one_or_none()
     if not device:
@@ -300,6 +321,8 @@ async def update_device(device_id: int, data: DeviceUpdate, db: AsyncSession = D
         assoc = await db.execute(select(Device).where(Device.id == assoc_value))
         if not assoc.scalar_one_or_none():
             raise HTTPException(400, "Associated device not found")
+
+    check_device_access(device, user)
 
     for field, value in data.model_dump(exclude_none=True).items():
         if field in ("mib_id", "associated_device_id"):
@@ -325,11 +348,18 @@ async def update_device(device_id: int, data: DeviceUpdate, db: AsyncSession = D
 
 
 @router.delete("/{device_id}")
-async def delete_device(device_id: int, db: AsyncSession = Depends(get_db)):
+async def delete_device(
+    device_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    if user.role not in ("admin", "operator"):
+        raise HTTPException(403, "Access denied: viewer role is read-only")
     result = await db.execute(select(Device).where(Device.id == device_id))
     device = result.scalar_one_or_none()
     if not device:
         raise HTTPException(404, "Device not found")
+    check_device_access(device, user)
     ip_address = device.ip_address
     device.is_active = False
     await db.commit()
@@ -344,8 +374,14 @@ async def delete_device(device_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/{device_id}/restore", response_model=DeviceOut)
-async def restore_device(device_id: int, db: AsyncSession = Depends(get_db)):
+async def restore_device(
+    device_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """Recover a soft-deleted device — undoes the Remove button."""
+    if user.role not in ("admin", "operator"):
+        raise HTTPException(403, "Access denied: viewer role is read-only")
     result = await db.execute(select(Device).where(Device.id == device_id))
     device = result.scalar_one_or_none()
     if not device:
@@ -353,6 +389,7 @@ async def restore_device(device_id: int, db: AsyncSession = Depends(get_db)):
     if device.is_active:
         raise HTTPException(400, "Device is not deleted")
 
+    check_device_access(device, user)
     device.is_active = True
     device.updated_at = datetime.utcnow()
     await db.commit()
@@ -409,12 +446,19 @@ async def purge_device(
 
 
 @router.post("/{device_id}/poll")
-async def force_poll(device_id: int, db: AsyncSession = Depends(get_db)):
+async def force_poll(
+    device_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """Immediately poll a device. Rejected for remote-agent-owned devices."""
+    if user.role not in ("admin", "operator"):
+        raise HTTPException(403, "Access denied: viewer role is read-only")
     result = await db.execute(select(Device).where(Device.id == device_id))
     device = result.scalar_one_or_none()
     if not device:
         raise HTTPException(404, "Device not found")
+    check_device_access(device, user)
     if device.source == "desktop_sync":
         raise HTTPException(
             409,
@@ -428,7 +472,8 @@ async def force_poll(device_id: int, db: AsyncSession = Depends(get_db)):
 async def get_metrics(
     device_id: int,
     hours: int = Query(24, le=168),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Get ALL metric records in the selected window, oldest-first for charting.
 
@@ -440,6 +485,12 @@ async def get_metrics(
     """
     from datetime import timedelta
     since = datetime.utcnow() - timedelta(hours=hours)
+
+    result = await db.execute(select(Device).where(Device.id == device_id))
+    device = result.scalar_one_or_none()
+    if not device:
+        raise HTTPException(404, "Device not found")
+    check_device_access(device, user)
 
     result = await db.execute(
         select(DeviceMetric)
@@ -486,7 +537,11 @@ class MonitoredMibMetricsRequest(BaseModel):
 
 
 @router.get("/{device_id}/interfaces")
-async def get_device_interfaces(device_id: int, db: AsyncSession = Depends(get_db)):
+async def get_device_interfaces(
+    device_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """Fetch all interfaces from device via live SNMP + return which are monitored.
 
     When the device has a vendor MIB attached (`mib_id`), this also detects
@@ -499,6 +554,7 @@ async def get_device_interfaces(device_id: int, db: AsyncSession = Depends(get_d
     device = result.scalar_one_or_none()
     if not device:
         raise HTTPException(404, "Device not found")
+    check_device_access(device, user)
     if device.source == "desktop_sync":
         raise HTTPException(
             409,
@@ -535,12 +591,16 @@ async def set_monitored_interfaces(
     device_id: int,
     data: MonitoredInterfacesRequest,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Save which interface indexes to monitor for bandwidth."""
+    if user.role not in ("admin", "operator"):
+        raise HTTPException(403, "Access denied: viewer role is read-only")
     result = await db.execute(select(Device).where(Device.id == device_id))
     device = result.scalar_one_or_none()
     if not device:
         raise HTTPException(404, "Device not found")
+    check_device_access(device, user)
     if device.source == "desktop_sync":
         raise HTTPException(
             409,
@@ -558,12 +618,16 @@ async def set_monitored_mib_metrics(
     device_id: int,
     data: MonitoredMibMetricsRequest,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Save which vendor-MIB table cells to poll and chart like interface bandwidth."""
+    if user.role not in ("admin", "operator"):
+        raise HTTPException(403, "Access denied: viewer role is read-only")
     result = await db.execute(select(Device).where(Device.id == device_id))
     device = result.scalar_one_or_none()
     if not device:
         raise HTTPException(404, "Device not found")
+    check_device_access(device, user)
     if device.source == "desktop_sync":
         raise HTTPException(
             409,
