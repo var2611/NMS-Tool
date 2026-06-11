@@ -73,7 +73,8 @@
         }
       ],
       "icon": "desktop/icon.ico",
-      "publisherName": "Nav Wireless Technologies"
+      "publisherName": "Nav Wireless Technologies",
+      "verifyUpdateCodeSignature": false
     },
     "linux": {
       "target": [
