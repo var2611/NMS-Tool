@@ -26,6 +26,16 @@ SYNC_API_KEY=my-gateway-secret-key-2024
 
 Leave `SYNC_API_KEY` **empty** to allow any desktop to sync without a key (open gateway — only use on private networks).
 
+> **Enabling the key on an already-running deployment — order matters.**
+> Agents with the wrong key get `403` on every push (queued items retry, then park as
+> "failed" — recover them with Settings → Sync log → *Retry failed*), so:
+> 1. Generate a key: `openssl rand -hex 24`
+> 2. Enter it on **every desktop agent first** (Settings → Cloud Sync → API key).
+>    The server still accepts anything at this point, so nothing breaks.
+> 3. Then set `SYNC_API_KEY` in `server/.env` and restart the server stack.
+> 4. On each agent, hit **Test Connection** — it now verifies the key against a
+>    protected endpoint and tells you outright if the server rejects it.
+
 ### 1b. Restart Docker
 ```bash
 cd server && docker compose --env-file .env up -d

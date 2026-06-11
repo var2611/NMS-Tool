@@ -225,17 +225,10 @@ async def create_device(data: DeviceCreate, db: AsyncSession = Depends(get_db)):
     await db.refresh(device)
 
     # Queue for cloud sync
-    from core.sync_agent import sync_agent
-    await sync_agent.queue_entity("device", device.id, "create", {
-        "name":           device.name,
-        "ip_address":     device.ip_address,
-        "device_type":    device.device_type.value if device.device_type else "unknown",
-        "status":         "unknown",
-        "snmp_community": device.snmp_community,
-        "snmp_port":      device.snmp_port,
-        "poll_interval":  device.poll_interval,
-        "notes":          device.notes,
-    })
+    from core.sync_agent import sync_agent, device_sync_payload
+    await sync_agent.queue_entity(
+        "device", device.id, "create", await device_sync_payload(device, db)
+    )
 
     return device
 
@@ -275,6 +268,14 @@ async def update_device(device_id: int, data: DeviceUpdate, db: AsyncSession = D
     device.updated_at = datetime.utcnow()
     await db.commit()
     await db.refresh(device)
+
+    # Without this queue, edits made after a device was first synced — location,
+    # pairing, rename — never reach the cloud (the dashboard map stays empty).
+    from core.sync_agent import sync_agent, device_sync_payload
+    await sync_agent.queue_entity(
+        "device", device.id, "update", await device_sync_payload(device, db)
+    )
+
     return device
 
 
@@ -314,17 +315,12 @@ async def restore_device(device_id: int, db: AsyncSession = Depends(get_db)):
 
     # Re-announce to the cloud — the soft delete queued a "delete", so without
     # this the device would stay missing on the server until its next update.
-    from core.sync_agent import sync_agent
-    await sync_agent.queue_entity("device", device.id, "create", {
-        "name":           device.name,
-        "ip_address":     device.ip_address,
-        "device_type":    device.device_type.value if device.device_type else "unknown",
-        "status":         device.status.value if device.status else "unknown",
-        "snmp_community": device.snmp_community,
-        "snmp_port":      device.snmp_port,
-        "poll_interval":  device.poll_interval,
-        "notes":          device.notes,
-    })
+    # Must be a "create" op: that is the only operation allowed to resurrect a
+    # device that was also removed on the server.
+    from core.sync_agent import sync_agent, device_sync_payload
+    await sync_agent.queue_entity(
+        "device", device.id, "create", await device_sync_payload(device, db)
+    )
 
     return device
 

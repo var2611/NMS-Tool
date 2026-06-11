@@ -31,6 +31,8 @@ export const devicesApi = {
   purge: (id) => api.delete(`/devices/${id}/purge`),
   listDeleted: () => api.get('/devices/deleted'),
   restore: (id) => api.post(`/devices/${id}/restore`),
+  cloudDevices: () => api.get('/sync/cloud-devices'),
+  recoverFromCloud: (ip) => api.post('/sync/recover', { ip_address: ip }),
   poll: (id) => api.post(`/devices/${id}/poll`),
   metrics: (id, hours=24) => api.get(`/devices/${id}/metrics`, { params: { hours } }),
   summary: () => api.get('/devices/summary'),

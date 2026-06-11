@@ -8,7 +8,7 @@ from typing import Dict, Set, Optional
 from core.snmp_engine import poll_device, ping_latency
 from core.alert_engine import evaluate_metrics, broadcast_ws
 from core.database import AsyncSessionLocal, Device, DeviceMetric, DeviceStatus, SystemSetting
-from core.sync_agent import sync_agent
+from core.sync_agent import sync_agent, device_sync_payload
 from core.mib_metrics import collect_monitored_mib_metrics
 from sqlalchemy import select, delete
 
@@ -278,20 +278,8 @@ class PollingScheduler:
             result = await session.execute(select(Device).where(Device.id == device_id))
             dev = result.scalar_one_or_none()
             if dev:
-                device_payload = {
-                    "name":           dev.name,
-                    "ip_address":     dev.ip_address,
-                    "device_type":    dev.device_type.value if dev.device_type else "unknown",
-                    "status":         new_status,
-                    "snmp_community": dev.snmp_community,
-                    "snmp_port":      dev.snmp_port,
-                    "sys_descr":      dev.sys_descr,
-                    "sys_name":       dev.sys_name,
-                    "sys_location":   dev.sys_location,
-                    "last_seen":      dev.last_seen.isoformat() if dev.last_seen else None,
-                    "uptime_seconds": metrics.get("uptime_seconds"),
-                    "poll_interval":  dev.poll_interval,
-                }
+                device_payload = await device_sync_payload(dev, session, status=new_status)
+                device_payload["uptime_seconds"] = metrics.get("uptime_seconds")
                 await sync_agent.queue_entity("device", device_id, "update", device_payload)
 
         # Queue metric snapshot for sync

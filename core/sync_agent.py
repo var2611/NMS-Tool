@@ -281,5 +281,46 @@ class SyncAgent:
             await session.commit()
 
 
+async def device_sync_payload(device, session, status: Optional[str] = None) -> dict:
+    """Full device payload for cloud sync — single source of truth for which
+    fields travel to the server (create/update/restore all use this).
+
+    `associated_device_id` is a LOCAL row id that means nothing on the server,
+    so the pairing is shipped as `associated_ip` and re-resolved remotely.
+    """
+    from core.database import Device
+    from sqlalchemy import select
+
+    associated_ip = None
+    if device.associated_device_id:
+        result = await session.execute(
+            select(Device.ip_address).where(Device.id == device.associated_device_id)
+        )
+        associated_ip = result.scalar_one_or_none()
+
+    return {
+        "name":           device.name,
+        "ip_address":     device.ip_address,
+        "device_type":    device.device_type.value if device.device_type else "unknown",
+        "status":         status or (device.status.value if device.status else "unknown"),
+        "snmp_community": device.snmp_community,
+        "snmp_port":      device.snmp_port,
+        "poll_interval":  device.poll_interval,
+        "notes":          device.notes,
+        "sys_descr":      device.sys_descr,
+        "sys_name":       device.sys_name,
+        "sys_location":   device.sys_location,
+        "sys_contact":    device.sys_contact,
+        "vendor":         device.vendor,
+        "model":          device.model,
+        "auto_discovered": device.auto_discovered,
+        "last_seen":      device.last_seen.isoformat() if device.last_seen else None,
+        "uptime_seconds": device.uptime_seconds,
+        "latitude":       device.latitude,
+        "longitude":      device.longitude,
+        "associated_ip":  associated_ip,
+    }
+
+
 # Global sync agent instance
 sync_agent = SyncAgent()

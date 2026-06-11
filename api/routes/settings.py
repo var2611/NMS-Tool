@@ -201,6 +201,20 @@ async def test_sync():
                     ),
                 }
 
+            # /ping is public, so it can't catch a bad API key — probe a
+            # key-protected sync endpoint too, otherwise the test passes while
+            # every actual push gets rejected with 403.
+            auth_resp = await client.get(
+                f"{url}/api/v1/sync/devices",
+                params={"site_name": settings.sync_site_name or "Desktop-Agent"},
+                headers={"X-API-Key": settings.sync_api_key or ""},
+            )
+            if auth_resp.status_code == 403:
+                return {
+                    "success": False,
+                    "error": "Server reachable, but it rejected the API key — ask the server admin for the gateway key.",
+                }
+
             return {
                 "success": True,
                 "mode": mode,

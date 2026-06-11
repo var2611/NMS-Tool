@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { devicesApi, mibsApi } from '../utils/api'
-import { Monitor, RefreshCw, Plus, Trash2, Radio, X, ChevronDown, ChevronUp, Info, Pencil, RotateCcw } from 'lucide-react'
+import { Monitor, RefreshCw, Plus, Trash2, Radio, X, ChevronDown, ChevronUp, Info, Pencil, RotateCcw, Cloud } from 'lucide-react'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 
@@ -270,7 +270,11 @@ export default function Devices() {
 
   const removeDevice = async (e, id) => {
     e.stopPropagation()
-    if (!confirm('Remove this device from monitoring? You can restore it later from "Removed devices".')) return
+    const target = devices.find(x => x.id === id)
+    const msg = target?.source === 'desktop_sync'
+      ? `Remove this synced device? It stays hidden here even while the "${target.site_name}" agent keeps syncing — restore it from "Removed devices" to bring it back.`
+      : 'Remove this device from monitoring? You can restore it later from "Removed devices".'
+    if (!confirm(msg)) return
     await devicesApi.delete(id)
     const removed = devices.find(x => x.id === id)
     setDevices(d => d.filter(x => x.id !== id))
@@ -287,6 +291,42 @@ export default function Devices() {
     } catch (e) {
       toast.error(e.response?.data?.detail || 'Could not restore device')
     }
+  }
+
+  // ── Cloud backup fallback — recover devices lost locally ──────────────────
+  const [showCloud, setShowCloud] = useState(false)
+  const [cloud, setCloud] = useState(null)          // null = not loaded yet
+  const [cloudLoading, setCloudLoading] = useState(false)
+  const [cloudError, setCloudError] = useState(null)
+  const [recoveringIp, setRecoveringIp] = useState(null)
+
+  const loadCloud = async () => {
+    setCloudLoading(true); setCloudError(null)
+    try {
+      const res = await devicesApi.cloudDevices()
+      setCloud(res.data)
+    } catch (e) {
+      setCloud(null)
+      setCloudError(e.response?.data?.detail || 'Could not reach the cloud server')
+    } finally { setCloudLoading(false) }
+  }
+
+  const toggleCloud = () => {
+    const opening = !showCloud
+    setShowCloud(opening)
+    if (opening && cloud === null) loadCloud()
+  }
+
+  const recoverFromCloud = async (ip) => {
+    setRecoveringIp(ip)
+    try {
+      const res = await devicesApi.recoverFromCloud(ip)
+      toast.success(`"${res.data.name}" recovered from cloud backup`)
+      await load()
+      await loadCloud()
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Recovery failed')
+    } finally { setRecoveringIp(null) }
   }
 
   const onDeviceSaved = (device) => {
@@ -433,6 +473,73 @@ export default function Devices() {
                   </button>
                 </div>
               ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Cloud backup — recover devices that no longer exist locally */}
+      {!loading && (
+        <div className="card overflow-hidden">
+          <button onClick={toggleCloud}
+            className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors text-left">
+            <div className="flex items-center gap-2">
+              <Cloud size={14} className="text-gray-400" />
+              <span className="text-sm font-medium text-gray-600 dark:text-gray-300">
+                Cloud backup
+              </span>
+              <span className="text-xs text-gray-400 hidden sm:block">— recover devices lost from this computer using their cloud copy</span>
+            </div>
+            {showCloud ? <ChevronUp size={14} className="text-gray-400" /> : <ChevronDown size={14} className="text-gray-400" />}
+          </button>
+          {showCloud && (
+            <div className="border-t border-gray-100 dark:border-gray-700">
+              {cloudLoading ? (
+                <div className="p-6 text-center">
+                  <div className="w-6 h-6 border-2 border-teal-500 border-t-transparent rounded-full animate-spin mx-auto" />
+                </div>
+              ) : cloudError ? (
+                <div className="p-6 text-center text-sm text-gray-400">
+                  {cloudError}
+                </div>
+              ) : (() => {
+                const recoverable = (cloud?.devices || []).filter(c => c.local_state === 'missing')
+                if (recoverable.length === 0) return (
+                  <div className="p-6 text-center text-sm text-gray-400">
+                    Every cloud device for "{cloud?.site_name}" already exists on this computer.
+                  </div>
+                )
+                return (
+                  <div className="divide-y divide-gray-100 dark:divide-gray-700">
+                    {recoverable.map(c => (
+                      <div key={c.ip_address} className="flex items-center gap-4 p-4">
+                        <Cloud size={18} className="text-blue-400 flex-shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <p className="font-medium text-gray-700 dark:text-gray-300 truncate">{c.name}</p>
+                          <p className="text-xs text-gray-500 font-mono">{c.ip_address}</p>
+                        </div>
+                        <span className="text-xs text-gray-400 hidden md:block w-24 truncate">{c.device_type}</span>
+                        {!c.active_on_server && (
+                          <span className="text-xs text-amber-500 hidden sm:block" title="This copy was also removed on the server — recovering revives it there too">
+                            removed on server
+                          </span>
+                        )}
+                        <button onClick={() => recoverFromCloud(c.ip_address)}
+                          disabled={recoveringIp === c.ip_address}
+                          className="btn-secondary text-xs py-1.5 px-3 flex items-center gap-1.5 disabled:opacity-50">
+                          <RotateCcw size={12} className={recoveringIp === c.ip_address ? 'animate-spin' : ''} />
+                          {recoveringIp === c.ip_address ? 'Recovering…' : 'Recover'}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )
+              })()}
+              <div className="px-4 py-2 border-t border-gray-100 dark:border-gray-700 flex justify-end">
+                <button onClick={loadCloud} className="text-xs text-gray-400 hover:text-teal-600 flex items-center gap-1">
+                  <RefreshCw size={11} /> Refresh from cloud
+                </button>
+              </div>
             </div>
           )}
         </div>

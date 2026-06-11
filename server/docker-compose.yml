@@ -37,6 +37,9 @@ services:
       API_PORT: 8765
       DATABASE_URL: postgresql+asyncpg://nmsuser:${POSTGRES_PASSWORD:-changeme123}@postgres:5432/nmsdb
       SECRET_KEY: ${SECRET_KEY:-change-this-to-random-secret-in-production}
+      # Sync gateway auth — when set, desktop agents must send this exact key
+      # in X-API-Key; when empty, ANY key is accepted (open gateway, dev only).
+      SYNC_API_KEY: ${SYNC_API_KEY:-}
       SNMP_TRAP_PORT: 162
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
