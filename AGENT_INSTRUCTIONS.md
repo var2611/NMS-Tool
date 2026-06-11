@@ -588,5 +588,17 @@ Services:
 | WS scale | In-memory `_ws_clients` set | Replace with Redis pub/sub for multi-worker/multi-server |
 | Sync API | Server-side `/api/v1/sync/*` endpoints not implemented | Add `api/routes/sync.py` with endpoints for device/trap/alert/metric ingest |
 | Metrics retention | No pruning — `device_metrics` grows forever | Add a scheduled job to delete metrics older than N days |
-| Electron build | `npm run build:*` scripts defined but no CI pipeline | Add GitHub Actions for automated installer builds |
+| Electron build | CI pipeline implemented via unified workflow | Run "Release — Bump, Tag & Build" manually in GitHub Actions |
 | Tests | None | Add `pytest` + `httpx.AsyncClient` for API routes, `vitest` for React |
+
+---
+
+## 14. Versioning & Release Rules
+
+- **Tag Priority**: The Git tag (e.g., `vX.Y.Z`) is the priority and primary source of truth for the release version naming and installer builds.
+- **Unified Release Flow**: Releasing must always run through the unified **Release — Bump, Tag & Build** GitHub Actions workflow (triggered manually via `workflow_dispatch`). This workflow:
+  1. Computes the target SemVer based on inputs.
+  2. Updates `version` in `package.json`, `frontend/package.json`, and `core/config.py`.
+  3. Commits the version bump and pushes the tag (e.g., `vX.Y.Z`) to `master`.
+  4. Runs the build jobs checked out to that specific tag to compile and package Windows, macOS, and Linux installers.
+- **No Direct Master Builds**: Pushes to `master` branch do not trigger builds directly. Releases are strictly tag-centric to avoid redundant builder workflows.
