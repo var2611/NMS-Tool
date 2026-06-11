@@ -47,6 +47,7 @@ class DeviceType(str, enum.Enum):
     switch = "switch"
     access_point = "access_point"
     server = "server"
+    indoor_unit_fso = "indoor_unit_fso"
     unknown = "unknown"
 
 class AlertSeverity(str, enum.Enum):

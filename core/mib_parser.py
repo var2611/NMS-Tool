@@ -340,9 +340,23 @@ async def save_mib_file(filename: str, content: bytes) -> Tuple[str, Dict]:
 
 def load_all_saved_mibs():
     """Load all saved MIB files on startup."""
+    # Copy from root preloaded mibs directory if exists
+    preloaded_dir = Path("./mibs")
+    if preloaded_dir.exists() and preloaded_dir.is_dir():
+        import shutil
+        for mib_file in preloaded_dir.glob("*"):
+            if mib_file.is_file() and mib_file.suffix.lower() in (".mib", ".my", ".txt"):
+                dest = MIB_DIR / mib_file.name
+                if not dest.exists():
+                    try:
+                        shutil.copy2(mib_file, dest)
+                        logger.info(f"Preloaded MIB copied: {mib_file.name}")
+                    except Exception as e:
+                        logger.warning(f"Could not copy preloaded MIB {mib_file.name}: {e}")
+
     parser = MibParser()
     count = 0
-    for pattern in ("*.mib", "*.my"):
+    for pattern in ("*.mib", "*.my", "*.txt"):
         for mib_file in MIB_DIR.glob(pattern):
             try:
                 text = decode_mib_bytes(mib_file.read_bytes())
@@ -352,3 +366,49 @@ def load_all_saved_mibs():
             except Exception as e:
                 logger.warning(f"Could not load MIB {mib_file.name}: {e}")
     logger.info(f"Loaded {count} MIB files from disk")
+
+
+async def sync_mibs_to_db():
+    """Ensure every MIB file on disk is registered in the database MibFile table."""
+    from core.database import AsyncSessionLocal, MibFile
+    from sqlalchemy import select
+
+    parser = MibParser()
+    async with AsyncSessionLocal() as session:
+        for pattern in ("*.mib", "*.my", "*.txt"):
+            for mib_file in MIB_DIR.glob(pattern):
+                filename = mib_file.name
+                if filename.lower() == "readme.md":
+                    continue
+
+                try:
+                    # Check if already registered
+                    existing = await session.execute(
+                        select(MibFile).where(MibFile.filename == filename)
+                    )
+                    mib_record = existing.scalar_one_or_none()
+
+                    if not mib_record:
+                        content = mib_file.read_bytes()
+                        text = decode_mib_bytes(content)
+                        parse_result = parser.parse(text, filename)
+
+                        # Skip registering if it parsed 0 OIDs
+                        if parse_result["oid_count"] == 0:
+                            continue
+
+                        mib_record = MibFile(
+                            name=parse_result["module_name"],
+                            filename=filename,
+                            file_path=str(mib_file),
+                            file_size=len(content),
+                            oid_count=parse_result["oid_count"],
+                            parsed_oids={k: v for k, v in list(parse_result["oids"].items())[:100]},
+                            is_standard=False,
+                            is_enabled=True,
+                        )
+                        session.add(mib_record)
+                        logger.info(f"Registered preloaded MIB to DB: {filename}")
+                except Exception as e:
+                    logger.warning(f"Could not register preloaded MIB {filename}: {e}")
+        await session.commit()

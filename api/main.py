@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse
 
 from core.config import settings
 from core.database import init_db
-from core.mib_parser import load_all_saved_mibs
+from core.mib_parser import load_all_saved_mibs, sync_mibs_to_db
 from core.scheduler import scheduler
 from core.sync_agent import sync_agent
 from core.alert_engine import register_ws, unregister_ws, handle_trap_alert
@@ -52,6 +52,7 @@ async def lifespan(app: FastAPI):
     
     # Load saved MIB files
     load_all_saved_mibs()
+    await sync_mibs_to_db()
     
     # Start polling scheduler (includes metrics pruner)
     await scheduler.start()

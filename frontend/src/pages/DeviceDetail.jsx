@@ -27,12 +27,7 @@ function MetricChart({ title, data, dataKeys, colors, unit = '', height = 120, h
   const { theme, timezone } = useStore()
 
   const hasData = data.some(d => dataKeys.some(k => d[k] != null))
-  if (!hasData) return (
-    <div className="card p-4">
-      <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 mb-2">{title}</p>
-      <p className="text-xs text-gray-400 italic h-8 flex items-center">No data yet — waiting for next poll</p>
-    </div>
-  )
+  if (!hasData) return null
 
   // Read dark mode from the DOM class — always accurate regardless of store timing.
   // Recharts renders tooltip AFTER hover so it must use the live DOM state,

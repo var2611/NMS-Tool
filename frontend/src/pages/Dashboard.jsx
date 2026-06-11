@@ -15,7 +15,8 @@ const STATUS_COLORS = {
 
 const DEVICE_ICONS = {
   pc: Monitor, laptop: Monitor, printer: Printer, rf_link: Wifi,
-  router: Activity, switch: Activity, server: Activity, unknown: Monitor
+  router: Activity, switch: Activity, server: Activity,
+  indoor_unit_fso: Wifi, unknown: Monitor
 }
 
 function StatCard({ label, value, icon: Icon, color, sub }) {
@@ -190,6 +191,9 @@ export default function Dashboard() {
         <p className="text-gray-500 text-sm mt-1">Overview of your entire network — last updated just now</p>
       </div>
 
+      {/* Network map */}
+      <NetworkMap devices={devices} />
+
       {/* Stats row */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard label="Total Devices" value={deviceSummary.total}
@@ -227,9 +231,6 @@ export default function Dashboard() {
           </ResponsiveContainer>
         </div>
       </div>
-
-      {/* Network map */}
-      <NetworkMap devices={devices} />
 
       {/* Device list + Alert feed + Pie */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">

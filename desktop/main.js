@@ -57,6 +57,27 @@ function startBackend() {
   // Ensure writable data directories exist in userData
   fs.mkdirSync(path.join(userData, 'data', 'mibs'), { recursive: true })
 
+  // Pre-load custom MIBs from resources into userData
+  const packagedMibsDir = getResourcePath('mibs')
+  const targetMibsDir = path.join(userData, 'data', 'mibs')
+  if (fs.existsSync(packagedMibsDir)) {
+    try {
+      const files = fs.readdirSync(packagedMibsDir)
+      for (const file of files) {
+        if (file.endsWith('.mib') || file.endsWith('.my') || file.endsWith('.txt')) {
+          const src = path.join(packagedMibsDir, file)
+          const dest = path.join(targetMibsDir, file)
+          if (!fs.existsSync(dest)) {
+            fs.copyFileSync(src, dest)
+            console.log(`[mibs] Preloaded MIB: ${file}`)
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[mibs] Failed to copy preloaded MIBs:', err.message)
+    }
+  }
+
   // .env lives in userData so the user can edit it
   const envFile = path.join(userData, '.env')
   if (!fs.existsSync(envFile)) {

@@ -4,8 +4,8 @@ import { Radar, Search, Check, Plus, ChevronDown, ChevronUp, Info } from 'lucide
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 
-const DEVICE_ICONS = { pc:'💻', laptop:'💻', printer:'🖨️', rf_link:'📡', router:'🔀', switch:'🔀', unknown:'📟' }
-const DEVICE_LABELS = { pc:'PC', laptop:'Laptop', printer:'Printer', rf_link:'RF Link', router:'Router/Switch', unknown:'Unknown' }
+const DEVICE_ICONS = { pc:'💻', laptop:'💻', printer:'🖨️', rf_link:'📡', indoor_unit_fso:'📡', router:'🔀', switch:'🔀', unknown:'📟' }
+const DEVICE_LABELS = { pc:'PC', laptop:'Laptop', printer:'Printer', rf_link:'RF Link', indoor_unit_fso:'Indoor Unit FSO', router:'Router/Switch', unknown:'Unknown' }
 
 const SETUP_GUIDES = [
   {

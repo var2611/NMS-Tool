@@ -19,17 +19,19 @@ const DEVICE_TYPES = [
   { value: 'printer',       label: 'Printer' },
   { value: 'rf_link',       label: 'RF Link (Ubiquiti / Cambium)' },
   { value: 'access_point',  label: 'Access Point' },
+  { value: 'indoor_unit_fso', label: 'Indoor Unit FSO' },
 ]
 
 const SNMP_SETUP = {
-  pc:           { title: 'Windows PC/Server', steps: ['Open Services (Win+R → services.msc)', 'Find "SNMP Service" → Properties → Security tab', 'Add community string "public" with READ access', 'Accept SNMP packets from: add this NMS server\'s IP', 'Start service, set Startup Type: Automatic'] },
-  laptop:       { title: 'Windows Laptop',    steps: ['Same as PC: enable SNMP Service via Services', 'Or via optional features: Settings → Apps → Optional Features → SNMP'] },
-  server:       { title: 'Linux/Windows Server', steps: ['Linux: sudo apt install snmpd', 'Edit /etc/snmp/snmpd.conf → add: rocommunity public default', 'sudo systemctl restart snmpd && sudo ufw allow 161/udp', 'Windows: enable SNMP Service via Services'] },
-  router:       { title: 'Router / Switch',   steps: ['MikroTik: Winbox → IP → SNMP → Enable, set community', 'Cisco: conf t → snmp-server community public RO → write memory', 'TP-Link/Netgear: Web UI → Management → SNMP → Enable'] },
-  printer:      { title: 'Network Printer',   steps: ['Open printer web UI at http://<printer-ip>', 'Go to Networking or Settings → SNMP', 'Enable SNMPv1/v2c → set Read community to "public"', 'Save and reboot if required'] },
-  rf_link:      { title: 'RF Link (Ubiquiti / Cambium)', steps: ['Ubiquiti AirMax: System → SNMP → Enable, set community', 'AirFiber: Settings → Services → SNMP', 'Cambium ePMP: Configuration → System → SNMP'] },
-  access_point: { title: 'Access Point',      steps: ['Open AP web interface', 'Navigate to Management or Services → SNMP', 'Enable SNMPv2c, set community string', 'Allow SNMP from NMS IP if IP filter available'] },
-  unknown:      { title: 'Generic Device',    steps: ['Consult device documentation for SNMP settings', 'Look for: Management → SNMP → Enable', 'Set community string (e.g. "public")', 'Ensure UDP port 161 is open on the device firewall'] },
+  pc:              { title: 'Windows PC/Server', steps: ['Open Services (Win+R → services.msc)', 'Find "SNMP Service" → Properties → Security tab', 'Add community string "public" with READ access', 'Accept SNMP packets from: add this NMS server\'s IP', 'Start service, set Startup Type: Automatic'] },
+  laptop:          { title: 'Windows Laptop',    steps: ['Same as PC: enable SNMP Service via Services', 'Or via optional features: Settings → Apps → Optional Features → SNMP'] },
+  server:          { title: 'Linux/Windows Server', steps: ['Linux: sudo apt install snmpd', 'Edit /etc/snmp/snmpd.conf → add: rocommunity public default', 'sudo systemctl restart snmpd && sudo ufw allow 161/udp', 'Windows: enable SNMP Service via Services'] },
+  router:          { title: 'Router / Switch',   steps: ['MikroTik: Winbox → IP → SNMP → Enable, set community', 'Cisco: conf t → snmp-server community public RO → write memory', 'TP-Link/Netgear: Web UI → Management → SNMP → Enable'] },
+  printer:         { title: 'Network Printer',   steps: ['Open printer web UI at http://<printer-ip>', 'Go to Networking or Settings → SNMP', 'Enable SNMPv1/v2c → set Read community to "public"', 'Save and reboot if required'] },
+  rf_link:         { title: 'RF Link (Ubiquiti / Cambium)', steps: ['Ubiquiti AirMax: System → SNMP → Enable, set community', 'AirFiber: Settings → Services → SNMP', 'Cambium ePMP: Configuration → System → SNMP'] },
+  access_point:    { title: 'Access Point',      steps: ['Open AP web interface', 'Navigate to Management or Services → SNMP', 'Enable SNMPv2c, set community string', 'Allow SNMP from NMS IP if IP filter available'] },
+  indoor_unit_fso: { title: 'Indoor Unit FSO',   steps: ['Open FSO web management UI', 'Go to SNMP settings page', 'Enable SNMP agent / service', 'Set Read-Only community name (e.g. "public")', 'Save configuration and reboot if needed'] },
+  unknown:         { title: 'Generic Device',    steps: ['Consult device documentation for SNMP settings', 'Look for: Management → SNMP → Enable', 'Set community string (e.g. "public")', 'Ensure UDP port 161 is open on the device firewall'] },
 }
 
 const EMPTY_FORM = {

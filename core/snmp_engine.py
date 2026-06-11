@@ -342,6 +342,10 @@ async def poll_device(device: Dict) -> Dict:
         base_result = await snmp_get(ip, base_oids, community=community)
         
         if not base_result:
+            # Fall back to ICMP ping
+            is_pingable = await ping_host(ip)
+            if is_pingable:
+                return {**metrics, "status": "online", "notes": "Responding to ping (no SNMP response)"}
             return {**metrics, "status": "offline", "error": "No SNMP response"}
 
         metrics["status"] = "online"
