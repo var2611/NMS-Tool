@@ -141,7 +141,7 @@ jobs:
       - name: Commit version bump
         run: |
           git add package.json frontend/package.json core/config.py
-          git commit -m "chore: bump version to ${{ steps.ver.outputs.tag }}"
+          git diff --cached --quiet || git commit -m "chore: bump version to ${{ steps.ver.outputs.tag }}"
 
       - name: Create and push tag
         run: |
