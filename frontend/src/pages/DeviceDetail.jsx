@@ -134,7 +134,7 @@ function MetricChart({ title, data, dataKeys, colors, unit = '', height = 120, h
             <Line
               key={k} type="monotone" dataKey={k}
               stroke={colors[i] || '#14b8a6'} strokeWidth={1.8}
-              dot={false} name={k} connectNulls
+              dot={false} name={k}
             />
           ))}
         </LineChart>
