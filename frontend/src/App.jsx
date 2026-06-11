@@ -41,7 +41,7 @@ import Login from './pages/Login'
 
 function AppInner() {
   useWebSocket()
-  const { theme, appMode, setAppMode } = useStore()
+  const { theme, appMode, setAppMode, user } = useStore()
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark')
@@ -52,22 +52,32 @@ function AppInner() {
   }, [])
 
   const isDesktop = appMode === 'desktop'
+  const isViewer = user?.role === 'viewer'
 
   return (
     <Layout>
-      <Routes>
-        <Route path="/" element={<Dashboard />} />
-        <Route path="/devices" element={<Devices />} />
-        <Route path="/devices/:id" element={<DeviceDetail />} />
-        <Route path="/discovery" element={<Discovery />} />
-        <Route path="/traps" element={<Traps />} />
-        <Route path="/alerts" element={<Alerts />} />
-        <Route path="/mibs" element={<MIBs />} />
-        <Route path="/reports" element={<Reports />} />
-        <Route path="/settings" element={<SettingsPage />} />
-        {!isDesktop && <Route path="/users" element={<Users />} />}
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+      {isViewer ? (
+        <Routes>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/devices" element={<Devices />} />
+          <Route path="/devices/:id" element={<DeviceDetail />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      ) : (
+        <Routes>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/devices" element={<Devices />} />
+          <Route path="/devices/:id" element={<DeviceDetail />} />
+          <Route path="/discovery" element={<Discovery />} />
+          <Route path="/traps" element={<Traps />} />
+          <Route path="/alerts" element={<Alerts />} />
+          <Route path="/mibs" element={<MIBs />} />
+          <Route path="/reports" element={<Reports />} />
+          <Route path="/settings" element={<SettingsPage />} />
+          {!isDesktop && <Route path="/users" element={<Users />} />}
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      )}
     </Layout>
   )
 }

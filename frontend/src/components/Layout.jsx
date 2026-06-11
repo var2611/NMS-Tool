@@ -25,7 +25,13 @@ export default function Layout({ children }) {
   const { sidebarOpen, toggleSidebar, toggleTheme, theme, wsConnected, alertSummary, user, logout, appMode } = useStore()
   const isAdmin = user?.role === 'admin'
   const isDesktop = appMode === 'desktop'
-  const visibleNav = NAV.filter(item => (!item.adminOnly || isAdmin) && (!item.hideOnDesktop || !isDesktop))
+  const isViewer = user?.role === 'viewer'
+  const visibleNav = NAV.filter(item => {
+    if (isViewer) {
+      return item.to === '/' || item.to === '/devices'
+    }
+    return (!item.adminOnly || isAdmin) && (!item.hideOnDesktop || !isDesktop)
+  })
 
   return (
     <div className="flex h-screen overflow-hidden bg-gray-50 dark:bg-gray-950">

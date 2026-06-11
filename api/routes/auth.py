@@ -140,6 +140,8 @@ async def change_password(
     db: AsyncSession = Depends(get_db),
 ):
     """Change the CURRENTLY authenticated user's password."""
+    if user.role == "viewer":
+        raise HTTPException(403, "View-only users cannot change password")
     if not _verify_password(data.current_password, user.hashed_password):
         raise HTTPException(400, "Current password is incorrect")
     if len(data.new_password) < 4:
