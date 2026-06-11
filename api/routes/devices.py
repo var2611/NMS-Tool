@@ -111,18 +111,17 @@ async def list_devices(
     q = select(Device).where(Device.is_active == True)
 
     # ── Multi-tenant filter ──────────────────────────────────────────────────
-    # Admins see everything. Non-admins see only devices from their allowed
-    # sites, plus locally-owned devices (source != desktop_sync) which have no
-    # site restriction.
     if user.role != "admin":
         allowed = user.allowed_sites or []
-        if allowed:
-            q = q.where(
-                (Device.site_name.in_(allowed)) | (Device.source != "desktop_sync")
-            )
+        if settings.is_server:
+            q = q.where(Device.site_name.in_(allowed))
         else:
-            # No sites assigned → only non-synced (local) devices
-            q = q.where(Device.source != "desktop_sync")
+            if allowed:
+                q = q.where(
+                    (Device.site_name.in_(allowed)) | (Device.source != "desktop_sync")
+                )
+            else:
+                q = q.where(Device.source != "desktop_sync")
 
     if status:
         q = q.where(Device.status == status)
@@ -140,29 +139,57 @@ async def list_devices(
 
 
 @router.get("/summary")
-async def device_summary(db: AsyncSession = Depends(get_db)):
+async def device_summary(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """Dashboard summary counts."""
-    total = await db.execute(select(func.count(Device.id)).where(Device.is_active == True))
-    online = await db.execute(select(func.count(Device.id)).where(Device.status == DeviceStatus.online, Device.is_active == True))
-    offline = await db.execute(select(func.count(Device.id)).where(Device.status == DeviceStatus.offline, Device.is_active == True))
-    warning = await db.execute(select(func.count(Device.id)).where(Device.status == DeviceStatus.warning, Device.is_active == True))
-    
-    by_type = await db.execute(
-        select(Device.device_type, func.count(Device.id))
-        .where(Device.is_active == True)
-        .group_by(Device.device_type)
-    )
+    # Build queries for counts
+    q_total = select(func.count(Device.id)).where(Device.is_active == True)
+    q_online = select(func.count(Device.id)).where(Device.status == DeviceStatus.online, Device.is_active == True)
+    q_offline = select(func.count(Device.id)).where(Device.status == DeviceStatus.offline, Device.is_active == True)
+    q_warning = select(func.count(Device.id)).where(Device.status == DeviceStatus.warning, Device.is_active == True)
+    q_by_type = select(Device.device_type, func.count(Device.id)).where(Device.is_active == True)
+
+    if user.role != "admin":
+        allowed = user.allowed_sites or []
+        if settings.is_server:
+            q_total = q_total.where(Device.site_name.in_(allowed))
+            q_online = q_online.where(Device.site_name.in_(allowed))
+            q_offline = q_offline.where(Device.site_name.in_(allowed))
+            q_warning = q_warning.where(Device.site_name.in_(allowed))
+            q_by_type = q_by_type.where(Device.site_name.in_(allowed))
+        else:
+            if allowed:
+                q_total = q_total.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
+                q_online = q_online.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
+                q_offline = q_offline.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
+                q_warning = q_warning.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
+                q_by_type = q_by_type.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
+            else:
+                q_total = q_total.where(Device.source != "desktop_sync")
+                q_online = q_online.where(Device.source != "desktop_sync")
+                q_offline = q_offline.where(Device.source != "desktop_sync")
+                q_warning = q_warning.where(Device.source != "desktop_sync")
+                q_by_type = q_by_type.where(Device.source != "desktop_sync")
+
+    total = await db.execute(q_total)
+    online = await db.execute(q_online)
+    offline = await db.execute(q_offline)
+    warning = await db.execute(q_warning)
+    by_type = await db.execute(q_by_type.group_by(Device.device_type))
+
     type_counts = {str(row[0].value if hasattr(row[0], 'value') else row[0]): row[1] for row in by_type}
 
-    total_count = total.scalar()
-    online_count = online.scalar()
+    total_count = total.scalar() or 0
+    online_count = online.scalar() or 0
     health_score = round((online_count / total_count * 100) if total_count > 0 else 0)
 
     return {
         "total": total_count,
         "online": online_count,
-        "offline": offline.scalar(),
-        "warning": warning.scalar(),
+        "offline": offline.scalar() or 0,
+        "warning": warning.scalar() or 0,
         "health_score": health_score,
         "by_type": type_counts,
     }
@@ -179,23 +206,41 @@ async def list_deleted_devices(
     # Same multi-tenant visibility rules as the active list
     if user.role != "admin":
         allowed = user.allowed_sites or []
-        if allowed:
-            q = q.where(
-                (Device.site_name.in_(allowed)) | (Device.source != "desktop_sync")
-            )
+        if settings.is_server:
+            q = q.where(Device.site_name.in_(allowed))
         else:
-            q = q.where(Device.source != "desktop_sync")
+            if allowed:
+                q = q.where(
+                    (Device.site_name.in_(allowed)) | (Device.source != "desktop_sync")
+                )
+            else:
+                q = q.where(Device.source != "desktop_sync")
 
     result = await db.execute(q.order_by(Device.name))
     return result.scalars().all()
 
 
 @router.get("/{device_id}", response_model=DeviceOut)
-async def get_device(device_id: int, db: AsyncSession = Depends(get_db)):
+async def get_device(
+    device_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     result = await db.execute(select(Device).where(Device.id == device_id))
     device = result.scalar_one_or_none()
     if not device:
         raise HTTPException(404, "Device not found")
+
+    # Enforce multi-tenant guard
+    if user.role != "admin":
+        allowed = user.allowed_sites or []
+        if settings.is_server:
+            if device.site_name not in allowed:
+                raise HTTPException(403, "Access denied to this device")
+        else:
+            if device.source == "desktop_sync" and device.site_name not in allowed:
+                raise HTTPException(403, "Access denied to this device")
+
     return device
 
 

@@ -5,7 +5,9 @@ from typing import Optional, List
 from datetime import datetime, timedelta
 from pydantic import BaseModel
 
-from core.database import get_db, TrapEvent, TrapRule, AlertSeverity
+from core.database import get_db, TrapEvent, TrapRule, AlertSeverity, Device, User
+from core.config import settings
+from api.routes.auth import get_current_user
 from core.snmp_engine import send_test_trap, STANDARD_TRAP_NAMES
 
 router = APIRouter()
@@ -41,10 +43,22 @@ async def list_trap_events(
     severity: Optional[str] = None,
     source_ip: Optional[str] = None,
     limit: int = Query(100, le=500),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     since = datetime.utcnow() - timedelta(hours=hours)
-    q = select(TrapEvent).where(TrapEvent.timestamp >= since)
+    q = select(TrapEvent).join(Device, TrapEvent.device_id == Device.id).where(TrapEvent.timestamp >= since)
+    
+    if user.role != "admin":
+        allowed = user.allowed_sites or []
+        if settings.is_server:
+            q = q.where(Device.site_name.in_(allowed))
+        else:
+            if allowed:
+                q = q.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
+            else:
+                q = q.where(Device.source != "desktop_sync")
+
     if severity:
         q = q.where(TrapEvent.severity == severity)
     if source_ip:
@@ -69,14 +83,33 @@ async def list_trap_events(
 
 
 @router.get("/events/stats")
-async def trap_stats(db: AsyncSession = Depends(get_db)):
+async def trap_stats(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     since = datetime.utcnow() - timedelta(hours=24)
-    total = await db.execute(select(func.count(TrapEvent.id)).where(TrapEvent.timestamp >= since))
-    critical = await db.execute(select(func.count(TrapEvent.id)).where(
-        TrapEvent.timestamp >= since, TrapEvent.severity == AlertSeverity.critical))
+    q_total = select(func.count(TrapEvent.id)).join(Device, TrapEvent.device_id == Device.id).where(TrapEvent.timestamp >= since)
+    q_critical = select(func.count(TrapEvent.id)).join(Device, TrapEvent.device_id == Device.id).where(
+        TrapEvent.timestamp >= since, TrapEvent.severity == AlertSeverity.critical)
+
+    if user.role != "admin":
+        allowed = user.allowed_sites or []
+        if settings.is_server:
+            q_total = q_total.where(Device.site_name.in_(allowed))
+            q_critical = q_critical.where(Device.site_name.in_(allowed))
+        else:
+            if allowed:
+                q_total = q_total.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
+                q_critical = q_critical.where((Device.site_name.in_(allowed)) | (Device.source != "desktop_sync"))
+            else:
+                q_total = q_total.where(Device.source != "desktop_sync")
+                q_critical = q_critical.where(Device.source != "desktop_sync")
+
+    total = await db.execute(q_total)
+    critical = await db.execute(q_critical)
     return {
-        "last_24h_total": total.scalar(),
-        "last_24h_critical": critical.scalar(),
+        "last_24h_total": total.scalar() or 0,
+        "last_24h_critical": critical.scalar() or 0,
     }
 
 
