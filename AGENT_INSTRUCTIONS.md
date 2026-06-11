@@ -596,6 +596,7 @@ Services:
 ## 14. Versioning & Release Rules
 
 - **Tag Priority**: The Git tag (e.g., `vX.Y.Z`) is the priority and primary source of truth for the release version naming and installer builds.
+- **Never Reuse Release Tags**: Once a version is built or released, never reuse, force-push, or recreate that tag (e.g., `v2.2.0`). Always increment the version (e.g., to `v2.2.1` or `v2.3.0` depending on changes) to prevent Electron auto-updater cache collision and ensure all clients receive the new build.
 - **Unified Release Flow**: Releasing must always run through the unified **Release — Bump, Tag & Build** GitHub Actions workflow (triggered manually via `workflow_dispatch`). This workflow:
   1. Computes the target SemVer based on inputs.
   2. Updates `version` in `package.json`, `frontend/package.json`, and `core/config.py`.
