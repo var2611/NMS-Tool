@@ -5,6 +5,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getUserDataPath:  () => ipcRenderer.invoke('get-user-data-path'),
   isElectron:       true,
 
+  // ── Auto-launch at system startup ─────────────────────────────────────────
+  getAutoLaunch:    () => ipcRenderer.invoke('get-auto-launch'),
+  setAutoLaunch:    (enabled) => ipcRenderer.invoke('set-auto-launch', enabled),
+
   // ── Auto-updater ──────────────────────────────────────────────────────────
   startDownload:      () => ipcRenderer.invoke('start-update-download'),
   installNow:         () => ipcRenderer.invoke('install-update-now'),

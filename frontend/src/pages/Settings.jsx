@@ -88,6 +88,48 @@ export default function SettingsPage() {
   // Timezone (frontend display preference — stored in localStorage via Zustand)
   const { timezone, setTimezone } = useStore()
 
+  // ── Desktop application (Electron only) — auto-start + manual update check ──
+  const electron = typeof window !== 'undefined' ? window.electronAPI : null
+  const [appVersion, setAppVersion] = useState('')
+  const [autoLaunch, setAutoLaunch] = useState(null)         // null = still loading
+  const [updateCheck, setUpdateCheck] = useState({ phase: 'idle' })
+
+  useEffect(() => {
+    if (!electron?.isElectron) return
+    electron.getAppVersion?.().then(v => setAppVersion(v || '')).catch(() => {})
+    electron.getAutoLaunch?.()
+      .then(r => setAutoLaunch(Boolean(r?.enabled)))
+      .catch(() => setAutoLaunch(false))
+  }, [])
+
+  const toggleAutoLaunch = async () => {
+    const next = !autoLaunch
+    setAutoLaunch(next)
+    try {
+      const r = await electron.setAutoLaunch(next)
+      setAutoLaunch(Boolean(r?.enabled))
+      if (r?.error) toast.error(`Could not change auto-start: ${r.error}`)
+      else toast.success(next
+        ? 'SentinelNMS will now start when the computer starts'
+        : 'Auto-start disabled')
+    } catch {
+      setAutoLaunch(!next)
+      toast.error('Could not change auto-start')
+    }
+  }
+
+  const checkForUpdates = async () => {
+    setUpdateCheck({ phase: 'checking' })
+    try {
+      const r = await electron.checkNow()
+      if (r?.error) setUpdateCheck({ phase: 'error', message: r.error })
+      else if (r?.available) setUpdateCheck({ phase: 'available', latest: r.latest })
+      else setUpdateCheck({ phase: 'uptodate', current: r?.current })
+    } catch {
+      setUpdateCheck({ phase: 'error', message: 'Update check failed' })
+    }
+  }
+
   useEffect(() => {
     settingsApi.get().then(r => {
       setConfig(r.data)
@@ -201,6 +243,65 @@ export default function SettingsPage() {
 
       {/* Server self-update — server mode + admin only (gated inside the component) */}
       <ServerUpdateSection />
+
+      {/* Desktop application — only inside the Electron app */}
+      {electron?.isElectron && (
+        <Section title="Application" icon={Monitor}>
+          {/* Auto-start at login */}
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Start when the computer starts</p>
+              <p className="text-xs text-gray-400 mt-0.5">
+                Launches minimized to the tray at login, so monitoring and cloud sync resume automatically after a restart.
+              </p>
+            </div>
+            <button
+              onClick={toggleAutoLaunch}
+              disabled={autoLaunch === null}
+              role="switch" aria-checked={!!autoLaunch}
+              className={clsx('relative w-11 h-6 rounded-full transition-colors flex-shrink-0 disabled:opacity-40',
+                autoLaunch ? 'bg-teal-600' : 'bg-gray-300 dark:bg-gray-600')}
+            >
+              <span className={clsx('absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform',
+                autoLaunch && 'translate-x-5')} />
+            </button>
+          </div>
+
+          {/* Manual update check */}
+          <div className="mt-5 border-t border-gray-100 dark:border-gray-700 pt-5">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Software updates</p>
+                <p className="text-xs text-gray-400 mt-0.5">
+                  Current version: <span className="font-mono">v{appVersion || config?.app?.version}</span>
+                  {' '}· also checked automatically every 4 hours
+                </p>
+              </div>
+              <button
+                onClick={checkForUpdates}
+                disabled={updateCheck.phase === 'checking'}
+                className="btn-secondary flex items-center gap-2 flex-shrink-0"
+              >
+                <RefreshCw size={14} className={updateCheck.phase === 'checking' ? 'animate-spin' : ''} />
+                {updateCheck.phase === 'checking' ? 'Checking…' : 'Check for updates'}
+              </button>
+            </div>
+            {updateCheck.phase === 'uptodate' && (
+              <p className="mt-3 text-sm text-green-600 dark:text-green-400 flex items-center gap-1.5">
+                <CheckCircle size={14} /> You're on the latest version{updateCheck.current ? ` (v${updateCheck.current})` : ''}.
+              </p>
+            )}
+            {updateCheck.phase === 'available' && (
+              <p className="mt-3 text-sm text-teal-600 dark:text-teal-400">
+                v{updateCheck.latest} is available — use the update bar at the top of the window to download and install it.
+              </p>
+            )}
+            {updateCheck.phase === 'error' && (
+              <p className="mt-3 text-sm text-red-500">{updateCheck.message}</p>
+            )}
+          </div>
+        </Section>
+      )}
 
       {/* Cloud Sync — desktop mode only */}
       {isDesktop && (

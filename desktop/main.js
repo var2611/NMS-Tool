@@ -141,9 +141,75 @@ function waitForBackend(timeout = BACKEND_STARTUP_TIMEOUT) {
   })
 }
 
+// ─── Auto-launch on system startup ───────────────────────────────────────────
+// Windows/macOS go through the OS login-item APIs; Linux has no Electron API
+// for this, so we manage a freedesktop autostart entry ourselves.
+
+const AUTOSTART_ARG = '--autostart'
+
+function linuxAutostartFile() {
+  return path.join(os.homedir(), '.config', 'autostart', 'sentinelnms-desktop.desktop')
+}
+
+function getAutoLaunchEnabled() {
+  if (process.platform === 'linux') {
+    return fs.existsSync(linuxAutostartFile())
+  }
+  return app.getLoginItemSettings({ args: [AUTOSTART_ARG] }).openAtLogin
+}
+
+function setAutoLaunchEnabled(enabled) {
+  try {
+    if (process.platform === 'linux') {
+      const file = linuxAutostartFile()
+      if (enabled) {
+        // AppImage exposes its own path via $APPIMAGE; .deb installs run the binary directly
+        const exec = process.env.APPIMAGE || process.execPath
+        fs.mkdirSync(path.dirname(file), { recursive: true })
+        fs.writeFileSync(file, [
+          '[Desktop Entry]',
+          'Type=Application',
+          'Name=SentinelNMS',
+          'Comment=Network monitoring agent — Nav Wireless Technologies',
+          `Exec="${exec}" ${AUTOSTART_ARG}`,
+          'Terminal=false',
+          'X-GNOME-Autostart-enabled=true',
+          '',
+        ].join('\n'))
+      } else {
+        fs.rmSync(file, { force: true })
+      }
+    } else {
+      app.setLoginItemSettings({
+        openAtLogin: enabled,
+        openAsHidden: true,                      // macOS ≤12: launch without showing the window
+        args: enabled ? [AUTOSTART_ARG] : [],    // Windows: lets us detect a login launch
+      })
+    }
+    return { enabled: getAutoLaunchEnabled() }
+  } catch (err) {
+    console.error('[autostart] Failed to update:', err.message)
+    return { enabled: getAutoLaunchEnabled(), error: err.message }
+  }
+}
+
+function launchedAtSystemStartup() {
+  if (process.argv.includes(AUTOSTART_ARG)) return true   // Windows + Linux
+  if (process.platform === 'darwin') {
+    try {
+      const s = app.getLoginItemSettings()
+      return Boolean(s.wasOpenedAtLogin || s.wasOpenedAsHidden)
+    } catch { return false }
+  }
+  return false
+}
+
 // ─── Window ───────────────────────────────────────────────────────────────────
 
 function createWindow() {
+  // When the OS launched us at login, stay minimized in the tray — monitoring
+  // and cloud sync run in the backend regardless of window visibility.
+  const startHidden = launchedAtSystemStartup()
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -177,7 +243,7 @@ function createWindow() {
     </div>
   `)
 
-  mainWindow.once('ready-to-show', () => mainWindow.show())
+  mainWindow.once('ready-to-show', () => { if (!startHidden) mainWindow.show() })
 
   mainWindow.on('close', (e) => {
     if (!app.isQuitting) {
@@ -323,6 +389,10 @@ function setupAutoUpdater() {
 ipcMain.handle('get-app-version', () => app.getVersion())
 ipcMain.handle('get-user-data-path', () => app.getPath('userData'))
 
+// Auto-launch IPC
+ipcMain.handle('get-auto-launch', () => ({ enabled: getAutoLaunchEnabled() }))
+ipcMain.handle('set-auto-launch', (_e, enabled) => setAutoLaunchEnabled(Boolean(enabled)))
+
 // Updater IPC
 ipcMain.handle('start-update-download', async () => {
   try {
@@ -360,7 +430,26 @@ ipcMain.handle('open-releases-page', () => {
   shell.openExternal('https://github.com/var2611/NMS-Tool/releases/latest')
 })
 
-ipcMain.handle('check-for-updates-now', () => {
-  if (!app.isPackaged) return { error: 'Dev mode — no updates' }
-  return autoUpdater.checkForUpdates().catch(e => ({ error: e.message }))
+function isNewerVersion(latest, current) {
+  const a = String(latest).split('.').map(n => parseInt(n, 10) || 0)
+  const b = String(current).split('.').map(n => parseInt(n, 10) || 0)
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) > (b[i] || 0)
+  }
+  return false
+}
+
+ipcMain.handle('check-for-updates-now', async () => {
+  if (!app.isPackaged) return { error: 'Updates only work in the installed app (dev mode)' }
+  try {
+    // The raw UpdateCheckResult holds a CancellationToken and can't cross the
+    // IPC boundary — return a plain summary instead. The update-available /
+    // download events still fire as usual and drive the top banner.
+    const result = await autoUpdater.checkForUpdates()
+    const current = app.getVersion()
+    const latest = result?.updateInfo?.version || null
+    return { current, latest, available: latest ? isNewerVersion(latest, current) : false }
+  } catch (e) {
+    return { error: e.message, current: app.getVersion() }
+  }
 })

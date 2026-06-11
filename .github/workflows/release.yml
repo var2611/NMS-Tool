@@ -1,19 +1,16 @@
-name: Release — Bump Version & Tag
+name: Release — Bump, Tag & Build
 
 # How to release a new version:
-#   GitHub → Actions → "Release — Bump Version & Tag" → Run workflow
+#   GitHub → Actions → "Release — Bump, Tag & Build" → Run workflow
 #   Pick bump type (patch / minor / major) OR enter an exact version.
 #   This workflow:
 #     1. Computes the new semver
 #     2. Updates version in package.json, frontend/package.json, core/config.py
 #     3. Commits "chore: bump version to vX.Y.Z"
 #     4. Creates and pushes the git tag vX.Y.Z
-#     5. That tag push automatically triggers "Build Desktop App" which
-#        builds all installers and publishes the GitHub Release.
-#
-# Version history is tracked via git tags. Run:
-#   git tag -l "v*" --sort=-version:refname
-# to see all past releases.
+#     5. Runs parallel matrix builds (Windows, macOS, Linux) on that tag
+#     6. Compiles frontend + PyInstaller backend + packages Electron app
+#     7. Publishes installers directly to GitHub Releases
 
 on:
   workflow_dispatch:
@@ -33,7 +30,7 @@ on:
         default: ''
 
 permissions:
-  contents: write
+  contents: write   # required to commit/tag and create GitHub Releases
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -42,7 +39,8 @@ jobs:
   bump-and-tag:
     runs-on: ubuntu-latest
     name: Bump version & push tag
-
+    outputs:
+      tag: ${{ steps.ver.outputs.tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -155,8 +153,148 @@ jobs:
         run: |
           echo "### ✅ Version bumped: ${{ steps.ver.outputs.current }} → ${{ steps.ver.outputs.new }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Tag **${{ steps.ver.outputs.tag }}** pushed — the **Build Desktop App** workflow" >> $GITHUB_STEP_SUMMARY
-          echo "is now running to produce the macOS + Windows installers." >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "🔗 [Watch the build](https://github.com/${{ github.repository }}/actions)" >> $GITHUB_STEP_SUMMARY
-          echo "🔗 [Releases](https://github.com/${{ github.repository }}/releases)" >> $GITHUB_STEP_SUMMARY
+          echo "Tag **${{ steps.ver.outputs.tag }}** pushed — starting the build-and-publish job" >> $GITHUB_STEP_SUMMARY
+          echo "to produce macOS, Windows, and Linux installers." >> $GITHUB_STEP_SUMMARY
+
+  build-and-publish:
+    needs: bump-and-tag
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            platform: mac-arm64
+            build_cmd: npx electron-builder --mac --arm64 --publish always
+
+          - os: ubuntu-22.04
+            platform: linux
+            build_cmd: npx electron-builder --linux --x64 --publish always
+
+          - os: windows-latest
+            platform: windows
+            build_cmd: npx electron-builder --win --x64 --publish always
+
+    runs-on: ${{ matrix.os }}
+    name: Build (${{ matrix.platform }})
+
+    steps:
+      - name: Checkout Tagged Release
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.bump-and-tag.outputs.tag }}
+
+      - name: Set up Node.js 18
+        uses: actions/setup-node@v6
+        with:
+          node-version: '18'
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            fakeroot rpm libarchive-tools \
+            libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
+            libatspi2.0-0 libdrm2 libgbm1 libasound2
+
+      # Frontend must be built BEFORE PyInstaller (PyInstaller bundles frontend/dist)
+      - name: Build React frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install Python deps + PyInstaller
+        shell: bash
+        run: |
+          python3 -m pip install --upgrade pip -q
+          python3 -m pip install -r requirements.txt pyinstaller -q
+
+      - name: Build standalone backend binary (PyInstaller)
+        shell: bash
+        run: |
+          if [[ "${{ runner.os }}" == "Windows" ]]; then SEP=";"; else SEP=":"; fi
+
+          python3 -m PyInstaller \
+            --onedir \
+            --name nms-backend \
+            --distpath dist-backend \
+            --workpath build-pyinstaller \
+            --noconfirm \
+            --add-data "api${SEP}api" \
+            --add-data "core${SEP}core" \
+            --add-data "frontend/dist${SEP}frontend/dist" \
+            --collect-all "uvicorn" \
+            --collect-all "fastapi" \
+            --collect-all "starlette" \
+            --collect-all "pydantic" \
+            --collect-all "pydantic_settings" \
+            --collect-all "pydantic_core" \
+            --collect-all "sqlalchemy" \
+            --collect-all "aiosqlite" \
+            --collect-all "asyncpg" \
+            --collect-all "alembic" \
+            --collect-all "pysnmp" \
+            --collect-all "pyasn1" \
+            --collect-all "bcrypt" \
+            --collect-all "jose" \
+            --collect-all "cryptography" \
+            --collect-all "aiofiles" \
+            --collect-all "apscheduler" \
+            --collect-all "psutil" \
+            --collect-all "netaddr" \
+            --collect-all "httpx" \
+            --collect-all "python_multipart" \
+            --collect-all "dotenv" \
+            --collect-all "anyio" \
+            --collect-all "sniffio" \
+            --collect-all "h11" \
+            --collect-all "websockets" \
+            --collect-all "wsproto" \
+            --hidden-import "email.mime.text" \
+            --hidden-import "email.mime.multipart" \
+            --hidden-import "email.mime.base" \
+            --hidden-import "email.utils" \
+            --hidden-import "smtplib" \
+            --hidden-import "ssl" \
+            --hidden-import "ipaddress" \
+            --hidden-import "uvicorn.logging" \
+            --hidden-import "uvicorn.loops.auto" \
+            --hidden-import "uvicorn.loops.asyncio" \
+            --hidden-import "uvicorn.protocols.http.auto" \
+            --hidden-import "uvicorn.protocols.http.h11_impl" \
+            --hidden-import "uvicorn.protocols.websockets.auto" \
+            --hidden-import "uvicorn.protocols.websockets.websockets_impl" \
+            --hidden-import "uvicorn.lifespan.on" \
+            --hidden-import "uvicorn.lifespan.off" \
+            --hidden-import "sqlalchemy.sql.default_comparator" \
+            --hidden-import "sqlalchemy.dialects.sqlite" \
+            --hidden-import "sqlalchemy.dialects.sqlite.aiosqlite" \
+            backend_entry.py 2>&1 | tail -5
+
+          echo "=== PyInstaller output ===" && ls -lh dist-backend/nms-backend/ | head -6
+
+      - name: Install Electron + electron-updater
+        run: npm install
+
+      # electron-builder --publish always:
+      #   • Builds the installer
+      #   • Creates/updates the GitHub Release for this tag
+      #   • Uploads the installer + latest.yml metadata to the release
+      # CSC_IDENTITY_AUTO_DISCOVERY=false skips macOS code-signing in CI.
+      # Add CSC_LINK + CSC_KEY_PASSWORD secrets to enable proper signing.
+      - name: Build and publish installer
+        run: ${{ matrix.build_cmd }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: List output files
+        shell: bash
+        run: ls -lh dist-electron/
