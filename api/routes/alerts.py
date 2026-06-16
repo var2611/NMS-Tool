@@ -11,6 +11,15 @@ from api.routes.auth import get_current_user
 
 router = APIRouter()
 
+import re
+
+IP_RE = re.compile(r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b')
+
+def mask_ips(text: str) -> str:
+    if not text:
+        return text
+    return IP_RE.sub('*.*.*.*', text)
+
 class AlertAck(BaseModel):
     notes: Optional[str] = None
     acknowledged_by: str = "admin"
@@ -47,7 +56,9 @@ async def list_alerts(
     return [
         {
             "id": a.id, "timestamp": a.timestamp.isoformat(),
-            "device_id": a.device_id, "title": a.title, "message": a.message,
+            "device_id": a.device_id,
+            "title": mask_ips(a.title) if user.role != "admin" else a.title,
+            "message": mask_ips(a.message) if user.role != "admin" else a.message,
             "severity": a.severity.value if hasattr(a.severity, 'value') else a.severity,
             "status": a.status.value if hasattr(a.status, 'value') else a.status,
             "source": a.source, "metric_name": a.metric_name,

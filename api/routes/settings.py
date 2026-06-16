@@ -27,6 +27,7 @@ class WebhookConfig(BaseModel):
 
 class SnmpSettingsUpdate(BaseModel):
     timeout: int  # seconds, clamped to 2–15
+    poll_interval: Optional[int] = None
 
 async def _get_all_settings(db: AsyncSession) -> dict:
     """Load all system_settings rows keyed by name."""
@@ -57,12 +58,16 @@ async def get_settings(db: AsyncSession = Depends(get_db)):
     sync_site_name    = db_settings.get("sync_site_name")    or settings.sync_site_name or ""
     sync_interval     = int(db_settings.get("sync_interval_minutes", settings.sync_interval_minutes))
 
+    # Global poll interval: DB setting, default to 5
+    poll_interval = int(db_settings.get("poll_interval", 5))
+
     return {
         "app": {"mode": settings.app_mode, "version": settings.app_version},
         "snmp": {
             "trap_port":         settings.snmp_trap_port,
             "default_community": settings.snmp_default_community,
             "timeout":           snmp_timeout,
+            "poll_interval":     poll_interval,
         },
         "sync": {
             **sync_agent.status,
@@ -78,11 +83,21 @@ async def get_settings(db: AsyncSession = Depends(get_db)):
 
 @router.put("/snmp")
 async def save_snmp_settings(data: SnmpSettingsUpdate, db: AsyncSession = Depends(get_db)):
-    """Save SNMP poll timeout (2–15 seconds) to DB so it takes effect on next poll."""
+    """Save SNMP poll timeout (2–15 seconds) and poll_interval (1–15 seconds) to DB."""
     timeout = max(2, min(15, data.timeout))
     await _save_setting("snmp_timeout", str(timeout), db)
+    
+    poll_interval = None
+    if data.poll_interval is not None:
+        poll_interval = max(1, min(15, data.poll_interval))
+        await _save_setting("poll_interval", str(poll_interval), db)
+        
     await db.commit()
-    return {"timeout": timeout}
+    
+    res = {"timeout": timeout}
+    if poll_interval is not None:
+        res["poll_interval"] = poll_interval
+    return res
 
 def _write_env_settings(**kwargs):
     """

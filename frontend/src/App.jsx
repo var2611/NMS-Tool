@@ -41,7 +41,7 @@ import Login from './pages/Login'
 
 function AppInner() {
   useWebSocket()
-  const { theme, appMode, setAppMode, user } = useStore()
+  const { theme, appMode, setAppMode, user, advanceFeaturesEnabled } = useStore()
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark')
@@ -52,7 +52,7 @@ function AppInner() {
   }, [])
 
   const isDesktop = appMode === 'desktop'
-  const isViewer = user?.role === 'viewer'
+  const isViewer = user?.role === 'viewer' || (isDesktop && !advanceFeaturesEnabled)
 
   return (
     <Layout>

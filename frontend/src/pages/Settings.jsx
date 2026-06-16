@@ -79,6 +79,7 @@ export default function SettingsPage() {
 
   // SNMP timeout
   const [snmpTimeout, setSnmpTimeout] = useState(5)
+  const [pollInterval, setPollInterval] = useState(5)
   const [snmpSaving, setSnmpSaving] = useState(false)
 
   // Google Maps API key (Dashboard network map)
@@ -152,6 +153,9 @@ export default function SettingsPage() {
       if (r.data.snmp?.timeout) {
         setSnmpTimeout(r.data.snmp.timeout)
       }
+      if (r.data.snmp?.poll_interval) {
+        setPollInterval(r.data.snmp.poll_interval)
+      }
       if (r.data.custom?.google_maps_api_key) {
         setGoogleMapsApiKey(r.data.custom.google_maps_api_key)
       }
@@ -165,9 +169,11 @@ export default function SettingsPage() {
   const saveSnmpTimeout = async () => {
     setSnmpSaving(true)
     try {
-      await settingsApi.saveSnmp({ timeout: snmpTimeout })
-      toast.success(`SNMP timeout set to ${snmpTimeout}s`)
-    } catch { toast.error('Failed to save SNMP timeout') }
+      await settingsApi.saveSnmp({ timeout: snmpTimeout, poll_interval: pollInterval })
+      toast.success(isDesktop
+        ? `SNMP settings saved (timeout: ${snmpTimeout}s, polling: ${pollInterval}s)`
+        : `SNMP timeout set to ${snmpTimeout}s`)
+    } catch { toast.error('Failed to save SNMP settings') }
     finally { setSnmpSaving(false) }
   }
 
@@ -594,13 +600,42 @@ export default function SettingsPage() {
             <span className="font-mono font-semibold text-gray-800 dark:text-gray-200 w-12 text-center">
               {snmpTimeout}s
             </span>
-            <button onClick={saveSnmpTimeout} disabled={snmpSaving} className="btn-primary text-sm px-4 py-1.5">
-              {snmpSaving ? 'Saving…' : 'Save'}
-            </button>
           </div>
           <p className="text-xs text-gray-400 mt-2">
             Lower = faster polls but more timeouts on slow devices. Higher = more reliable but slower detection.
           </p>
+        </div>
+
+        {/* Editable: Global Poll Interval (Desktop only) */}
+        {isDesktop && (
+          <div className="mt-5 border-t border-gray-100 dark:border-gray-700 pt-5 animate-fade-in">
+            <label className="label">
+              Global Poll Interval
+              <span className="text-xs text-gray-400 font-normal ml-2">
+                How often to poll devices (1–15 seconds)
+              </span>
+            </label>
+            <div className="flex items-center gap-4 mt-2">
+              <input
+                type="range" min={1} max={15} step={1}
+                value={pollInterval}
+                onChange={e => setPollInterval(Number(e.target.value))}
+                className="flex-1 accent-teal-500"
+              />
+              <span className="font-mono font-semibold text-gray-800 dark:text-gray-200 w-12 text-center">
+                {pollInterval}s
+              </span>
+            </div>
+            <p className="text-xs text-gray-400 mt-2">
+              Controls how frequently the NMS desktop client queries devices. Range is 1 to 15 seconds. Default is 5s.
+            </p>
+          </div>
+        )}
+
+        <div className="mt-5 flex justify-end">
+          <button onClick={saveSnmpTimeout} disabled={snmpSaving} className="btn-primary text-sm px-4 py-1.5">
+            {snmpSaving ? 'Saving…' : 'Save'}
+          </button>
         </div>
       </Section>
 

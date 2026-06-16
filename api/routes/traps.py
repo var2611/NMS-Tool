@@ -12,6 +12,15 @@ from core.snmp_engine import send_test_trap, STANDARD_TRAP_NAMES
 
 router = APIRouter()
 
+import re
+
+IP_RE = re.compile(r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b')
+
+def mask_ips(text: str) -> str:
+    if not text:
+        return text
+    return IP_RE.sub('*.*.*.*', text)
+
 
 class TrapRuleCreate(BaseModel):
     name: str
@@ -69,11 +78,11 @@ async def list_trap_events(
         {
             "id": e.id,
             "timestamp": e.timestamp.isoformat(),
-            "source_ip": e.source_ip,
+            "source_ip": "*.*.*.*" if user.role != "admin" else e.source_ip,
             "device_id": e.device_id,
             "trap_oid": e.trap_oid,
             "trap_name": e.trap_name,
-            "plain_english": e.plain_english,
+            "plain_english": mask_ips(e.plain_english) if user.role != "admin" else e.plain_english,
             "severity": e.severity.value if hasattr(e.severity, 'value') else e.severity,
             "rule_matched": e.rule_matched,
         }

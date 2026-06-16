@@ -93,6 +93,9 @@ class UserUpdate(BaseModel):
 class ResetPasswordRequest(BaseModel):
     new_password: str
 
+class VerifyPasswordRequest(BaseModel):
+    password: str
+
 
 def _user_out(u: User) -> dict:
     return {
@@ -126,6 +129,15 @@ async def login(data: LoginRequest, db: AsyncSession = Depends(get_db)):
         "role": user.role,
         "allowed_sites": user.allowed_sites or [],
     }
+
+
+@router.post("/verify-admin-password")
+async def verify_admin_password(data: VerifyPasswordRequest, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(User).where(User.username == "admin", User.is_active == True))
+    user = result.scalar_one_or_none()
+    if not user or not _verify_password(data.password, user.hashed_password):
+        raise HTTPException(401, "Incorrect password")
+    return {"success": True}
 
 
 @router.get("/me")

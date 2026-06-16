@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { settingsApi } from '../utils/api'
 import { MapPin, Link2 } from 'lucide-react'
 import clsx from 'clsx'
+import { useStore } from '../store'
 
 const STATUS_COLORS = {
   online: '#22c55e', offline: '#ef4444', warning: '#f59e0b', unknown: '#9ca3af'
@@ -70,6 +71,15 @@ export default function NetworkMap({ devices }) {
   const overlaysRef = useRef([])
   const infoWindowRef = useRef(null)
 
+  const { user, appMode, advanceFeaturesEnabled } = useStore()
+
+  const getVisibleIp = (ip) => {
+    if (appMode === 'desktop') {
+      return advanceFeaturesEnabled ? ip : '*.*.*.*'
+    }
+    return user?.role === 'admin' ? ip : '*.*.*.*'
+  }
+
   const links = useMemo(() => {
     const located = (devices || []).filter(d => d.latitude != null && d.longitude != null)
     const byId = new Map((devices || []).map(d => [d.id, d]))
@@ -116,12 +126,12 @@ export default function NetworkMap({ devices }) {
         <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px">
           <div>
             <span style="font-weight:500">${escapeHtml(link.deviceA.name)}</span>
-            <div style="font-size:10px;color:#6b7280;font-family:monospace">${escapeHtml(link.deviceA.ip_address)}</div>
+            <div style="font-size:10px;color:#6b7280;font-family:monospace">${escapeHtml(getVisibleIp(link.deviceA.ip_address))}</div>
           </div>
           <span style="color:#0d9488;font-weight:bold">↔</span>
           <div style="text-align:right">
             <span style="font-weight:500">${escapeHtml(link.deviceB.name)}</span>
-            <div style="font-size:10px;color:#6b7280;font-family:monospace">${escapeHtml(link.deviceB.ip_address)}</div>
+            <div style="font-size:10px;color:#6b7280;font-family:monospace">${escapeHtml(getVisibleIp(link.deviceB.ip_address))}</div>
           </div>
         </div>
         <div style="font-size:11px;color:#475569;border-top:1px solid #e2e8f0;padding-top:4px;display:flex;justify-content:space-between">
@@ -199,7 +209,7 @@ export default function NetworkMap({ devices }) {
         infoWindow.setContent(`
           <div style="font-family:Inter,sans-serif;font-size:13px;min-width:160px">
             <div style="font-weight:600;margin-bottom:2px">${escapeHtml(d.name)}</div>
-            <div style="color:#6b7280;font-family:monospace;font-size:12px">${escapeHtml(d.ip_address)}</div>
+            <div style="color:#6b7280;font-family:monospace;font-size:12px">${escapeHtml(getVisibleIp(d.ip_address))}</div>
             <div style="margin-top:4px;text-transform:capitalize;color:#374151">
               <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${STATUS_COLORS[d.status] || STATUS_COLORS.unknown};margin-right:5px"></span>
               ${escapeHtml(d.status)} · ${escapeHtml(d.device_type)}
@@ -314,11 +324,11 @@ export default function NetworkMap({ devices }) {
                     <div className="flex items-center justify-between w-full text-[10px] text-gray-500">
                       <div className="flex items-center gap-1">
                         <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: STATUS_COLORS[link.deviceA.status] || '#9ca3af' }} />
-                        <span className="font-mono">{link.deviceA.ip_address}</span>
+                        <span className="font-mono">{getVisibleIp(link.deviceA.ip_address)}</span>
                       </div>
                       <div className="flex items-center gap-1">
                         <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: STATUS_COLORS[link.deviceB.status] || '#9ca3af' }} />
-                        <span className="font-mono">{link.deviceB.ip_address}</span>
+                        <span className="font-mono">{getVisibleIp(link.deviceB.ip_address)}</span>
                       </div>
                     </div>
                   </button>

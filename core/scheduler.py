@@ -36,6 +36,20 @@ class PollingScheduler:
             task.cancel()
         logger.info("Polling scheduler stopped")
 
+    async def _get_global_poll_interval(self) -> int:
+        """Read global poll interval from DB SystemSetting, fallback to default 5."""
+        try:
+            async with AsyncSessionLocal() as session:
+                row = await session.execute(
+                    select(SystemSetting).where(SystemSetting.key == "poll_interval")
+                )
+                setting = row.scalar_one_or_none()
+                if setting and setting.value:
+                    return max(1, min(15, int(setting.value)))
+        except Exception:
+            pass
+        return 5
+
     async def _get_snmp_timeout(self) -> int:
         """Read SNMP timeout from DB SystemSetting, fallback to config default."""
         try:
@@ -64,6 +78,12 @@ class PollingScheduler:
         """
         while self._running:
             try:
+                from core.config import settings
+                is_desktop = settings.is_desktop
+                global_interval = 5
+                if is_desktop:
+                    global_interval = await self._get_global_poll_interval()
+
                 async with AsyncSessionLocal() as session:
                     result = await session.execute(
                         select(Device).where(
@@ -77,9 +97,20 @@ class PollingScheduler:
                     current_ids: Set[int] = set()
                     for device in devices:
                         current_ids.add(device.id)
-                        interval = device.poll_interval or 300
+                        
+                        if is_desktop:
+                            interval = global_interval
+                        else:
+                            interval = device.poll_interval or 300
 
-                        if device.id not in self._tasks or self._tasks[device.id].done():
+                        existing_task = self._tasks.get(device.id)
+                        existing_interval = self._poll_intervals.get(device.id)
+
+                        if existing_task is None or existing_task.done() or existing_interval != interval:
+                            if existing_task and not existing_task.done():
+                                logger.info(f"Interval changed for device {device.id} from {existing_interval}s to {interval}s. Restarting task.")
+                                existing_task.cancel()
+                            
                             self._poll_intervals[device.id] = interval
                             self._tasks[device.id] = asyncio.create_task(
                                 self._poll_device_loop(device.id, interval)
@@ -89,11 +120,13 @@ class PollingScheduler:
                         if device_id not in current_ids:
                             self._tasks[device_id].cancel()
                             del self._tasks[device_id]
+                            if device_id in self._poll_intervals:
+                                del self._poll_intervals[device_id]
 
             except Exception as e:
                 logger.error(f"Scheduler manage error: {e}")
 
-            await asyncio.sleep(60)
+            await asyncio.sleep(10)
 
     async def _poll_device_loop(self, device_id: int, interval: int):
         """Continuously poll a single device at its configured interval."""

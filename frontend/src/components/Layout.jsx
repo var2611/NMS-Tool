@@ -1,13 +1,17 @@
+import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import { useStore } from '../store'
 import UpdateBanner from './UpdateBanner'
 import {
   LayoutDashboard, Monitor, Radar, Bell, AlertTriangle,
   FileCode, BarChart3, Settings, Wifi, WifiOff,
-  Sun, Moon, Menu, Zap, Users as UsersIcon, LogOut
+  Sun, Moon, Menu, Zap, Users as UsersIcon, LogOut,
+  ShieldAlert, ShieldCheck
 } from 'lucide-react'
 import clsx from 'clsx'
 import SentinelLogo from './SentinelLogo'
+import api from '../utils/api'
+import toast from 'react-hot-toast'
 
 const NAV = [
   { to: '/',          icon: LayoutDashboard, label: 'Dashboard' },
@@ -22,10 +26,48 @@ const NAV = [
 ]
 
 export default function Layout({ children }) {
-  const { sidebarOpen, toggleSidebar, toggleTheme, theme, wsConnected, alertSummary, user, logout, appMode } = useStore()
+  const {
+    sidebarOpen, toggleSidebar, toggleTheme, theme, wsConnected, alertSummary,
+    user, logout, appMode, advanceFeaturesEnabled, setAdvanceFeaturesEnabled
+  } = useStore()
+  
+  const [showUnlockModal, setShowUnlockModal] = useState(false)
+  const [passwordInput, setPasswordInput] = useState('')
+  const [errorMsg, setErrorMsg] = useState('')
+  const [loadingUnlock, setLoadingUnlock] = useState(false)
+
+  const handleToggleAdvance = () => {
+    if (advanceFeaturesEnabled) {
+      setAdvanceFeaturesEnabled(false)
+      toast.success('Admin features locked.')
+    } else {
+      setShowUnlockModal(true)
+    }
+  }
+
+  const handleUnlockSubmit = async (e) => {
+    e.preventDefault()
+    if (!passwordInput) {
+      setErrorMsg('Password is required')
+      return
+    }
+    setLoadingUnlock(true)
+    try {
+      await api.post('/auth/verify-admin-password', { password: passwordInput })
+      setAdvanceFeaturesEnabled(true)
+      setShowUnlockModal(false)
+      setPasswordInput('')
+      toast.success('Admin features unlocked!')
+    } catch (err) {
+      setErrorMsg(err.response?.data?.detail || 'Incorrect password')
+    } finally {
+      setLoadingUnlock(false)
+    }
+  }
+
   const isAdmin = user?.role === 'admin'
   const isDesktop = appMode === 'desktop'
-  const isViewer = user?.role === 'viewer'
+  const isViewer = user?.role === 'viewer' || (isDesktop && !advanceFeaturesEnabled)
   const visibleNav = NAV.filter(item => {
     if (isViewer) {
       return item.to === '/' || item.to === '/devices'
@@ -82,6 +124,13 @@ export default function Layout({ children }) {
             {wsConnected ? <Wifi size={14} /> : <WifiOff size={14} />}
             {sidebarOpen && (wsConnected ? 'Live connected' : 'Reconnecting...')}
           </div>
+          {isDesktop && (
+            <button onClick={handleToggleAdvance}
+              className="flex items-center gap-3 w-full px-3 py-2 rounded-lg text-sm text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
+              {advanceFeaturesEnabled ? <ShieldCheck size={16} className="text-green-500" /> : <ShieldAlert size={16} className="text-amber-500" />}
+              {sidebarOpen && (advanceFeaturesEnabled ? 'Lock Admin Features' : 'Unlock Admin Features')}
+            </button>
+          )}
           <button onClick={toggleTheme}
             className="flex items-center gap-3 w-full px-3 py-2 rounded-lg text-sm text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
             {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
@@ -126,6 +175,62 @@ export default function Layout({ children }) {
           {children}
         </main>
       </div>
+
+      {showUnlockModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="bg-white dark:bg-gray-800 p-6 rounded-xl max-w-sm w-full border border-gray-200 dark:border-gray-700 shadow-xl space-y-4">
+            <div>
+              <h3 className="text-lg font-bold text-gray-950 dark:text-white flex items-center gap-2">
+                <ShieldAlert className="text-amber-500" size={20} />
+                Unlock Admin Features
+              </h3>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                Enter the administrator password to enable advanced monitoring controls and view IP addresses.
+              </p>
+            </div>
+            
+            <form onSubmit={handleUnlockSubmit} className="space-y-4">
+              <div>
+                <label className="label">Admin Password</label>
+                <input
+                  type="password"
+                  className="input w-full"
+                  placeholder="Enter password..."
+                  value={passwordInput}
+                  onChange={e => {
+                    setPasswordInput(e.target.value)
+                    setErrorMsg('')
+                  }}
+                  autoFocus
+                />
+                {errorMsg && <p className="text-xs text-red-500 mt-1">{errorMsg}</p>}
+              </div>
+
+              <div className="flex justify-end gap-2 text-sm">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowUnlockModal(false)
+                    setPasswordInput('')
+                    setErrorMsg('')
+                  }}
+                  className="btn-secondary py-1.5 px-3"
+                  disabled={loadingUnlock}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn-primary py-1.5 px-3 flex items-center gap-2"
+                  disabled={loadingUnlock}
+                >
+                  {loadingUnlock ? 'Verifying...' : 'Unlock'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

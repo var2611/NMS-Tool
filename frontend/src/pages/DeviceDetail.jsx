@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { devicesApi } from '../utils/api'
+import { devicesApi, settingsApi } from '../utils/api'
 import { useStore } from '../store'
 import { formatTs, chartLabel } from '../utils/timezone'
 import { DeviceModal } from './Devices'
@@ -430,8 +430,17 @@ function PurgeDeviceModal({ device, onClose, onPurged }) {
 export default function DeviceDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const { timezone, user } = useStore()
+  const { timezone, user, appMode, advanceFeaturesEnabled } = useStore()
   const isAdmin = user?.role === 'admin'
+  const isDesktop = appMode === 'desktop'
+  const isViewer = user?.role === 'viewer' || (isDesktop && !advanceFeaturesEnabled)
+
+  const getVisibleIp = (ip) => {
+    if (isDesktop) {
+      return advanceFeaturesEnabled ? ip : '*.*.*.*'
+    }
+    return user?.role === 'admin' ? ip : '*.*.*.*'
+  }
 
   const [device, setDevice] = useState(null)
   const [metrics, setMetrics] = useState([])
@@ -439,6 +448,7 @@ export default function DeviceDetail() {
   const [hours, setHours] = useState(3)   // default 3h — smallest useful window, fastest load
   const [showEdit, setShowEdit] = useState(false)
   const [showPurge, setShowPurge] = useState(false)
+  const [globalPollInterval, setGlobalPollInterval] = useState(5)
 
   const loadDevice = useCallback(async () => {
     try {
@@ -480,7 +490,14 @@ export default function DeviceDetail() {
 
   useEffect(() => {
     Promise.all([loadDevice(), loadMetrics()]).finally(() => setLoading(false))
-  }, [id])
+    if (appMode === 'desktop') {
+      settingsApi.get().then(r => {
+        if (r.data.snmp?.poll_interval) {
+          setGlobalPollInterval(r.data.snmp.poll_interval)
+        }
+      }).catch(() => {})
+    }
+  }, [id, appMode])
 
   // Re-label when timezone changes (label is display-only, ts/domain stay numeric)
   useEffect(() => {
@@ -589,7 +606,7 @@ export default function DeviceDetail() {
             <span className="text-sm text-gray-400">{device.device_type}</span>
           </div>
           <div className="flex items-center gap-3 mt-1 ml-6">
-            <span className="font-mono text-sm text-gray-500">{device.ip_address}</span>
+            <span className="font-mono text-sm text-gray-500">{getVisibleIp(device.ip_address)}</span>
             {device.sys_location && <span className="text-sm text-gray-400">· {device.sys_location}</span>}
             {/* Origin badge */}
             {device.source === 'desktop_sync' && device.site_name ? (
@@ -622,7 +639,7 @@ export default function DeviceDetail() {
             <option value={168}>Last 7 days</option>
           </select>
           {/* Poll Now / Edit only for locally-owned devices — remote agents own their own config */}
-          {!isRemote && (
+          {!isRemote && !isViewer && (
             <>
               <button onClick={pollNow} className="btn-secondary flex items-center gap-1.5 text-sm">
                 <Radio size={14} /> Poll now
@@ -632,11 +649,13 @@ export default function DeviceDetail() {
               </button>
             </>
           )}
-          <button onClick={removeDevice} className="btn-danger flex items-center gap-1.5 text-sm">
-            <Trash2 size={14} /> Remove
-          </button>
+          {!isViewer && (
+            <button onClick={removeDevice} className="btn-danger flex items-center gap-1.5 text-sm">
+              <Trash2 size={14} /> Remove
+            </button>
+          )}
           {/* Purge — admin-only hard delete of the device row + all history */}
-          {isAdmin && (
+          {isAdmin && !isViewer && (
             <button onClick={() => setShowPurge(true)} className="btn-danger flex items-center gap-1.5 text-sm" title="Permanently delete device and all history">
               <AlertTriangle size={14} /> Purge
             </button>
@@ -663,7 +682,7 @@ export default function DeviceDetail() {
               ? `${Math.floor(device.uptime_seconds/3600)}h ${Math.floor((device.uptime_seconds%3600)/60)}m`
               : '—' },
           { label: 'SNMP',       value: `${device.snmp_version} / ${device.snmp_community}` },
-          { label: 'Poll every', value: `${device.poll_interval}s` },
+          { label: 'Poll every', value: appMode === 'desktop' ? `${globalPollInterval}s` : `${device.poll_interval}s` },
         ].map(({ label, value }) => (
           <div key={label} className="card p-4">
             <p className="text-xs text-gray-400 mb-1">{label}</p>

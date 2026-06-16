@@ -72,6 +72,13 @@ export const useStore = create((set, get) => ({
     set({ appMode: mode })
   },
 
+  // Advance Features (Desktop/Client mode only)
+  advanceFeaturesEnabled: localStorage.getItem('nms_advance_features') === 'true',
+  setAdvanceFeaturesEnabled: (v) => {
+    localStorage.setItem('nms_advance_features', v ? 'true' : 'false')
+    set({ advanceFeaturesEnabled: v })
+  },
+
   sidebarOpen: true,
   toggleSidebar: () => set(state => ({ sidebarOpen: !state.sidebarOpen })),
 

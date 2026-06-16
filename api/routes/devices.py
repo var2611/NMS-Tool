@@ -149,7 +149,15 @@ async def list_devices(
         )
     q = q.order_by(Device.name).limit(limit).offset(offset)
     result = await db.execute(q)
-    return result.scalars().all()
+    devices = result.scalars().all()
+    if user.role != "admin":
+        out = []
+        for d in devices:
+            d_out = DeviceOut.model_validate(d)
+            d_out.ip_address = "*.*.*.*"
+            out.append(d_out)
+        return out
+    return devices
 
 
 @router.get("/summary")
@@ -232,7 +240,15 @@ async def list_deleted_devices(
             )
 
     result = await db.execute(q.order_by(Device.name))
-    return result.scalars().all()
+    devices = result.scalars().all()
+    if user.role != "admin":
+        out = []
+        for d in devices:
+            d_out = DeviceOut.model_validate(d)
+            d_out.ip_address = "*.*.*.*"
+            out.append(d_out)
+        return out
+    return devices
 
 
 @router.get("/{device_id}", response_model=DeviceOut)
@@ -249,6 +265,10 @@ async def get_device(
     # Enforce multi-tenant guard
     check_device_access(device, user)
 
+    if user.role != "admin":
+        d_out = DeviceOut.model_validate(device)
+        d_out.ip_address = "*.*.*.*"
+        return d_out
     return device
 
 
@@ -289,6 +309,10 @@ async def create_device(
         "device", device.id, "create", await device_sync_payload(device, db)
     )
 
+    if user.role != "admin":
+        d_out = DeviceOut.model_validate(device)
+        d_out.ip_address = "*.*.*.*"
+        return d_out
     return device
 
 
@@ -344,6 +368,10 @@ async def update_device(
         "device", device.id, "update", await device_sync_payload(device, db)
     )
 
+    if user.role != "admin":
+        d_out = DeviceOut.model_validate(device)
+        d_out.ip_address = "*.*.*.*"
+        return d_out
     return device
 
 
@@ -404,6 +432,10 @@ async def restore_device(
         "device", device.id, "create", await device_sync_payload(device, db)
     )
 
+    if user.role != "admin":
+        d_out = DeviceOut.model_validate(device)
+        d_out.ip_address = "*.*.*.*"
+        return d_out
     return device
 
 

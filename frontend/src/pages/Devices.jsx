@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useStore } from '../store'
 import { devicesApi, mibsApi } from '../utils/api'
-import { Monitor, RefreshCw, Plus, Trash2, Radio, X, ChevronDown, ChevronUp, Info, Pencil, RotateCcw, Cloud } from 'lucide-react'
+import api from '../utils/api'
+import { Monitor, RefreshCw, Plus, Trash2, Radio, X, ChevronDown, ChevronUp, Info, Pencil, RotateCcw, Cloud, ShieldAlert } from 'lucide-react'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 
@@ -61,6 +63,7 @@ function deviceToForm(device) {
 }
 
 export function DeviceModal({ device, onClose, onSaved }) {
+  const { appMode } = useStore()
   const isEdit = !!device
   const [form, setForm] = useState(() => isEdit ? deviceToForm(device) : EMPTY_FORM)
   const [saving, setSaving] = useState(false)
@@ -151,16 +154,18 @@ export function DeviceModal({ device, onClose, onSaved }) {
                 <input type="number" className="input font-mono" value={form.snmp_port}
                   onChange={e => set('snmp_port', e.target.value)} min={1} max={65535} />
               </div>
-              <div>
-                <label className="label">Poll Interval</label>
-                <select className="input" value={form.poll_interval} onChange={e => set('poll_interval', Number(e.target.value))}>
-                  <option value={60}>60s — every minute</option>
-                  <option value={120}>120s — every 2 min</option>
-                  <option value={300}>300s — every 5 min</option>
-                  <option value={600}>600s — every 10 min</option>
-                  <option value={1800}>1800s — every 30 min</option>
-                </select>
-              </div>
+              {appMode !== 'desktop' && (
+                <div>
+                  <label className="label">Poll Interval</label>
+                  <select className="input" value={form.poll_interval} onChange={e => set('poll_interval', Number(e.target.value))}>
+                    <option value={60}>60s — every minute</option>
+                    <option value={120}>120s — every 2 min</option>
+                    <option value={300}>300s — every 5 min</option>
+                    <option value={600}>600s — every 10 min</option>
+                    <option value={1800}>1800s — every 30 min</option>
+                  </select>
+                </div>
+              )}
             </div>
           </div>
           <div>
@@ -246,6 +251,7 @@ export function DeviceModal({ device, onClose, onSaved }) {
 
 export default function Devices() {
   const navigate = useNavigate()
+  const { user, appMode, advanceFeaturesEnabled, setAdvanceFeaturesEnabled } = useStore()
   const [devices, setDevices] = useState([])
   const [deleted, setDeleted] = useState([])
   const [showDeleted, setShowDeleted] = useState(false)
@@ -253,6 +259,52 @@ export default function Devices() {
   const [filter, setFilter] = useState('')
   const [showAdd, setShowAdd] = useState(false)
   const [editingDevice, setEditingDevice] = useState(null)
+
+  const [showUnlockPrompt, setShowUnlockPrompt] = useState(false)
+  const [promptPassword, setPromptPassword] = useState('')
+  const [promptError, setPromptError] = useState('')
+  const [promptLoading, setPromptLoading] = useState(false)
+  const [pendingAction, setPendingAction] = useState(null)
+
+  const runWithLockCheck = (action, callback) => {
+    if (appMode === 'desktop' && !advanceFeaturesEnabled) {
+      setPendingAction({ name: action, run: callback })
+      setShowUnlockPrompt(true)
+    } else {
+      callback()
+    }
+  }
+
+  const handlePromptSubmit = async (e) => {
+    e.preventDefault()
+    if (!promptPassword) {
+      setPromptError('Password is required')
+      return
+    }
+    setPromptLoading(true)
+    try {
+      await api.post('/auth/verify-admin-password', { password: promptPassword })
+      setAdvanceFeaturesEnabled(true)
+      setShowUnlockPrompt(false)
+      setPromptPassword('')
+      toast.success('Admin features unlocked!')
+      if (pendingAction && pendingAction.run) {
+        pendingAction.run()
+      }
+    } catch (err) {
+      setPromptError(err.response?.data?.detail || 'Incorrect password')
+    } finally {
+      setPromptLoading(false)
+      setPendingAction(null)
+    }
+  }
+
+  const getVisibleIp = (ip) => {
+    if (appMode === 'desktop') {
+      return advanceFeaturesEnabled ? ip : '*.*.*.*'
+    }
+    return user?.role === 'admin' ? ip : '*.*.*.*'
+  }
 
   const load = async () => {
     try {
@@ -364,7 +416,7 @@ export default function Devices() {
           <button onClick={load} className="btn-secondary flex items-center gap-2">
             <RefreshCw size={14} /> Refresh
           </button>
-          <button onClick={() => setShowAdd(true)} className="btn-primary flex items-center gap-2">
+          <button onClick={() => runWithLockCheck('add', () => setShowAdd(true))} className="btn-primary flex items-center gap-2">
             <Plus size={14} /> Add Device
           </button>
         </div>
@@ -390,7 +442,7 @@ export default function Devices() {
                 <p className="font-medium text-gray-900 dark:text-gray-100 truncate group-hover:text-teal-600 transition-colors">
                   {d.name}
                 </p>
-                <p className="text-xs text-gray-500 font-mono">{d.ip_address}</p>
+                <p className="text-xs text-gray-500 font-mono">{getVisibleIp(d.ip_address)}</p>
               </div>
               <span className={clsx('badge text-xs', STATUS_BADGE[d.status] || 'bg-gray-100 text-gray-600')}>
                 {d.status}
@@ -418,13 +470,13 @@ export default function Devices() {
                       className="p-1.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700" title="Poll now">
                       <Radio size={14} className="text-teal-600" />
                     </button>
-                    <button onClick={e => { e.stopPropagation(); setEditingDevice(d) }}
+                    <button onClick={e => { e.stopPropagation(); runWithLockCheck('edit', () => setEditingDevice(d)) }}
                       className="p-1.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700" title="Edit device">
                       <Pencil size={14} className="text-gray-500" />
                     </button>
                   </>
                 )}
-                <button onClick={e => removeDevice(e, d.id)}
+                <button onClick={e => { e.stopPropagation(); runWithLockCheck('remove', () => removeDevice(e, d.id)) }}
                   className="p-1.5 rounded hover:bg-red-100 dark:hover:bg-red-900/30" title="Remove">
                   <Trash2 size={14} className="text-red-400" />
                 </button>
@@ -436,7 +488,7 @@ export default function Devices() {
               <Monitor size={36} className="mx-auto mb-3 opacity-30" />
               <p className="font-medium">No devices yet.</p>
               <p className="text-sm mt-1">
-                <button onClick={() => setShowAdd(true)} className="text-teal-600 underline">Add a device</button>
+                <button onClick={() => runWithLockCheck('add', () => setShowAdd(true))} className="text-teal-600 underline">Add a device</button>
                 {' '}manually or use{' '}
                 <button onClick={() => navigate('/discovery')} className="text-teal-600 underline">Auto-Discover</button>.
               </p>
@@ -466,10 +518,10 @@ export default function Devices() {
                   <Monitor size={18} className="text-gray-400 flex-shrink-0" />
                   <div className="flex-1 min-w-0">
                     <p className="font-medium text-gray-700 dark:text-gray-300 truncate">{d.name}</p>
-                    <p className="text-xs text-gray-500 font-mono">{d.ip_address}</p>
+                    <p className="text-xs text-gray-500 font-mono">{getVisibleIp(d.ip_address)}</p>
                   </div>
                   <span className="text-xs text-gray-400 hidden md:block w-24 truncate">{d.device_type}</span>
-                  <button onClick={() => restoreDevice(d.id)}
+                  <button onClick={() => runWithLockCheck('restore', () => restoreDevice(d.id))}
                     className="btn-secondary text-xs py-1.5 px-3 flex items-center gap-1.5">
                     <RotateCcw size={12} /> Restore
                   </button>
@@ -518,7 +570,7 @@ export default function Devices() {
                         <Cloud size={18} className="text-blue-400 flex-shrink-0" />
                         <div className="flex-1 min-w-0">
                           <p className="font-medium text-gray-700 dark:text-gray-300 truncate">{c.name}</p>
-                          <p className="text-xs text-gray-500 font-mono">{c.ip_address}</p>
+                          <p className="text-xs text-gray-500 font-mono">{getVisibleIp(c.ip_address)}</p>
                         </div>
                         <span className="text-xs text-gray-400 hidden md:block w-24 truncate">{c.device_type}</span>
                         {!c.active_on_server && (
@@ -526,7 +578,7 @@ export default function Devices() {
                             removed on server
                           </span>
                         )}
-                        <button onClick={() => recoverFromCloud(c.ip_address)}
+                        <button onClick={() => runWithLockCheck('recover', () => recoverFromCloud(c.ip_address))}
                           disabled={recoveringIp === c.ip_address}
                           className="btn-secondary text-xs py-1.5 px-3 flex items-center gap-1.5 disabled:opacity-50">
                           <RotateCcw size={12} className={recoveringIp === c.ip_address ? 'animate-spin' : ''} />
@@ -544,6 +596,62 @@ export default function Devices() {
               </div>
             </div>
           )}
+        </div>
+      )}
+      {showUnlockPrompt && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="bg-white dark:bg-gray-800 p-6 rounded-xl max-w-sm w-full border border-gray-200 dark:border-gray-700 shadow-xl space-y-4 text-left">
+            <div>
+              <h3 className="text-lg font-bold text-gray-950 dark:text-white flex items-center gap-2">
+                <ShieldAlert className="text-amber-500" size={20} />
+                Confirm Admin Action
+              </h3>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                This operation requires administrator privileges. Please enter the admin password to continue.
+              </p>
+            </div>
+            
+            <form onSubmit={handlePromptSubmit} className="space-y-4">
+              <div>
+                <label className="label">Admin Password</label>
+                <input
+                  type="password"
+                  className="input w-full"
+                  placeholder="Enter password..."
+                  value={promptPassword}
+                  onChange={e => {
+                    setPromptPassword(e.target.value)
+                    setPromptError('')
+                  }}
+                  autoFocus
+                />
+                {promptError && <p className="text-xs text-red-500 mt-1">{promptError}</p>}
+              </div>
+
+              <div className="flex justify-end gap-2 text-sm">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowUnlockPrompt(false)
+                    setPromptPassword('')
+                    setPromptError('')
+                    setPendingAction(null)
+                  }}
+                  className="btn-secondary py-1.5 px-3"
+                  disabled={promptLoading}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn-primary py-1.5 px-3 flex items-center gap-2"
+                  disabled={promptLoading}
+                >
+                  {promptLoading ? 'Verifying...' : 'Unlock & Run'}
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
     </div>
