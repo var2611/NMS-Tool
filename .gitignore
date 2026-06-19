@@ -50,5 +50,4 @@ desktop.ini
 
 dist-backend/
 build-pyinstaller/
-nms-backend.spec
 package-lock.json
