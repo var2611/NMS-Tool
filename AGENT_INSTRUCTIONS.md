@@ -13,7 +13,7 @@ NMS-Tool is a **Network Management System** with a dual-deployment architecture:
 | **Desktop** | Single user, local PC/Linux | SQLite | Single admin | **Pushes** data to server |
 | **Server** | Multi-user, VPS/cloud | PostgreSQL | JWT + roles | **Receives** data from desktops |
 
-Both modes run the **exact same Python backend and React frontend**. The only differences are environment variables (`APP_MODE=desktop` vs `APP_MODE=server`) and the deployment wrapper (Electron vs Docker).
+Both modes run the **exact same Python backend and React frontend**. The only differences are environment variables (`APP_MODE=desktop` vs `APP_MODE=server`) and the deployment wrapper (Tauri vs Docker).
 
 **Default credentials:** username `admin`, password `admin` (stored bcrypt-hashed in `users` table).
 
@@ -76,9 +76,16 @@ NMS-Tool/
 │           ├── Reports.jsx     ← Bar charts + uptime table
 │           └── Settings.jsx    ← Sync config, SMTP, SNMP info, password change
 │
-├── desktop/
-│   ├── main.js            ← Electron main process (spawns Python, system tray, loading screen)
-│   └── preload.js         ← Electron context bridge (exposes electronAPI to renderer)
+├── desktop/               ← Desktop resources (icons, logo)
+├── src-tauri/             ← Tauri v2 Desktop App Shell
+│   ├── Cargo.toml         ← Rust dependencies (sqlx, snmp2, snmp-parser, etc.)
+│   ├── tauri.conf.json    ← Tauri config (sidecar configs, build configs, permissions)
+│   ├── preload.js         ← Preload shim script mapping Electron API to Tauri commands
+│   └── src/
+│       ├── main.rs        ← App entry point
+│       ├── lib.rs         ← Dynamic port allocation, sidecar spawner & system tray manager
+│       ├── snmp_poller.rs ← Background SNMP poller written in Rust (saves to SQLite, notifies FastAPI)
+│       └── trap_listener.rs ← Background UDP trap listener (UDP 162/1162, forwards to FastAPI)
 │
 ├── server/
 │   ├── Dockerfile         ← Python 3.11 slim + SNMP libs
@@ -463,26 +470,27 @@ Edit `DEFAULT_THRESHOLDS` dict in **`core/alert_engine.py`**. Keys must match me
 
 ---
 
-## 9. Desktop App (Electron) Details
+## 9. Desktop App (Tauri v2 + Rust) Details
 
-**File:** `desktop/main.js`
+**Files:** `src-tauri/src/lib.rs`, `src-tauri/src/snmp_poller.rs`, `src-tauri/src/trap_listener.rs`
 
 Key behaviors:
-- On startup: shows a full-screen loading animation while waiting for Python backend.
-- `waitForBackend()` — polls `GET /api/v1/ping` every 500ms until 200 or 30s timeout.
-- `getPythonPath()` — looks for `venv/bin/python` (dev) or `resources/venv/bin/python` (packaged).
-- `getResourcePath()` — `process.resourcesPath` when packaged, `..` when dev.
-- On window close: hides to system tray (doesn't kill Python).
-- On tray → Quit: sets `app.isQuitting = true`, kills Python with SIGTERM then SIGKILL after 3s.
+- **Spawning Python Sidecar**: Allocates a free TCP port dynamically (starting at 8765) and generates a secure random token `SECRET_TOKEN`. Spawns the Python binary `nms-backend` passing configuration via environment variables: `SECRET_TOKEN`, `API_PORT`, `SQLITE_DB_PATH`, `LOG_FILE`.
+- **Rust SNMP Poller**: Continuously polls active devices on a background thread in Rust. Updates device status directly, writes device metrics to SQLite, and fires a loopback HTTP POST to Python `/api/v1/internal/device-polled` for alert check & WS push.
+- **Rust Trap Listener**: Listens on UDP port 162 (falls back to 1162 if no admin privileges) using a non-blocking socket. Parses SNMP v1 & v2c traps in Rust and forwards them via HTTP POST to Python `/api/v1/internal/trap-received`.
+- **Database Connection**: Configures SQLite with Write-Ahead Logging (WAL) and synchronous = NORMAL. Uses composite indexing on `(device_id, timestamp DESC)` for fast metric reads.
+- **Electron Compatibility**: Injects `preload.js` as an initialization script into the WebView window to shim `window.electronAPI` to avoid changing any React code.
 
-**To build installers:**
+**To run in development mode:**
 ```bash
-npm install           # in root (installs electron-builder)
-npm run build:win     # → dist-electron/*.exe
-npm run build:linux   # → dist-electron/*.deb + *.AppImage
-npm run build:mac     # → dist-electron/*.dmg
+npm run dev           # builds React frontend + runs tauri dev
 ```
-**Requires:** a built Python venv at `./venv/` and built frontend at `./frontend/dist/`.
+
+**To build production installers:**
+```bash
+npm run build         # packages Python sidecar + builds final Mac/Windows/Linux app
+```
+
 
 ---
 
@@ -588,7 +596,7 @@ Services:
 | WS scale | In-memory `_ws_clients` set | Replace with Redis pub/sub for multi-worker/multi-server |
 | Sync API | Server-side `/api/v1/sync/*` endpoints not implemented | Add `api/routes/sync.py` with endpoints for device/trap/alert/metric ingest |
 | Metrics retention | No pruning — `device_metrics` grows forever | Add a scheduled job to delete metrics older than N days |
-| Electron build | CI pipeline implemented via unified workflow | Run "Release — Bump, Tag & Build" manually in GitHub Actions |
+| Tauri build | CI pipeline implemented via unified workflow | Run "Release — Bump, Tag & Build" manually in GitHub Actions |
 | Tests | None | Add `pytest` + `httpx.AsyncClient` for API routes, `vitest` for React |
 
 ---
@@ -596,7 +604,7 @@ Services:
 ## 14. Versioning & Release Rules
 
 - **Tag Priority**: The Git tag (e.g., `vX.Y.Z`) is the priority and primary source of truth for the release version naming and installer builds.
-- **Never Reuse Release Tags**: Once a version is built or released, never reuse, force-push, or recreate that tag (e.g., `v2.2.0`). Always increment the version (e.g., to `v2.2.1` or `v2.3.0` depending on changes) to prevent Electron auto-updater cache collision and ensure all clients receive the new build.
+- **Never Reuse Release Tags**: Once a version is built or released, never reuse, force-push, or recreate that tag (e.g., `v2.2.0`). Always increment the version (e.g., to `v2.2.1` or `v2.3.0` depending on changes) to prevent Tauri auto-updater cache collision and ensure all clients receive the new build.
 - **Unified Release Flow**: Releasing must always run through the unified **Release — Bump, Tag & Build** GitHub Actions workflow (triggered manually via `workflow_dispatch`). This workflow:
   1. Computes the target SemVer based on inputs.
   2. Updates `version` in `package.json`, `frontend/package.json`, and `core/config.py`.

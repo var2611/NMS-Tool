@@ -28,6 +28,7 @@ async def broadcast_ws(event_type: str, data: dict):
     """Broadcast a message to all connected WebSocket clients."""
     import json
     message = json.dumps({"type": event_type, "data": data, "ts": datetime.utcnow().isoformat()})
+    print(f"TAURI_EVENT:{message}", flush=True)
     dead = set()
     for ws in list(_ws_clients):
         try:

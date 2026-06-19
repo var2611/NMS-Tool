@@ -22,7 +22,7 @@ from core.alert_engine import register_ws, unregister_ws, handle_trap_alert
 from core.snmp_engine import TrapListener
 from core.database import AsyncSessionLocal
 
-from api.routes import devices, discovery, traps, alerts, mibs, reports, auth, settings as settings_router, ws_router
+from api.routes import devices, discovery, traps, alerts, mibs, reports, auth, settings as settings_router, ws_router, internal
 from api.routes import sync as sync_router
 from api.routes import update as update_router
 
@@ -55,18 +55,25 @@ async def lifespan(app: FastAPI):
     await sync_mibs_to_db()
     
     # Start polling scheduler (includes metrics pruner)
-    await scheduler.start()
+    # On desktop, the polling is done by Rust, so we only run the metrics pruner.
+    # On server, we run the full polling scheduler.
+    if settings.is_desktop:
+        await scheduler.start(poll=False)
+    else:
+        await scheduler.start(poll=True)
 
-    # Start SNMP trap listener
-    async def _trap_callback(trap_data: dict):
-        async with AsyncSessionLocal() as session:
-            try:
-                await handle_trap_alert(trap_data, session)
-            except Exception as exc:
-                logger.error(f"Trap handler error: {exc}")
+    # Start SNMP trap listener (server mode only, Rust handles desktop traps)
+    trap_listener = None
+    if not settings.is_desktop:
+        async def _trap_callback(trap_data: dict):
+            async with AsyncSessionLocal() as session:
+                try:
+                    await handle_trap_alert(trap_data, session)
+                except Exception as exc:
+                    logger.error(f"Trap handler error: {exc}")
 
-    trap_listener = TrapListener(port=settings.snmp_trap_port, callback=_trap_callback)
-    asyncio.create_task(trap_listener.start())
+        trap_listener = TrapListener(port=settings.snmp_trap_port, callback=_trap_callback)
+        asyncio.create_task(trap_listener.start())
 
     # Start sync agent (desktop mode only)
     if settings.is_desktop and settings.sync_enabled:
@@ -77,7 +84,8 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     await scheduler.stop()
-    await trap_listener.stop()
+    if trap_listener:
+        await trap_listener.stop()
     await sync_agent.stop()
     logger.info("SentinelNMS stopped")
 
@@ -90,29 +98,35 @@ app = FastAPI(
 )
 
 # CORS for React dev server
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173", "http://127.0.0.1:3000"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+if not settings.is_desktop:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost:3000", "http://localhost:5173", "http://127.0.0.1:3000"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 # ─── API Routes ───────────────────────────────────────────────────────────────
 
 API_PREFIX = "/api/v1"
 
+# Core routers required in both desktop and server mode
 app.include_router(auth.router,           prefix=f"{API_PREFIX}/auth",      tags=["Auth"])
-app.include_router(devices.router,        prefix=f"{API_PREFIX}/devices",   tags=["Devices"])
-app.include_router(discovery.router,      prefix=f"{API_PREFIX}/discovery", tags=["Discovery"])
-app.include_router(traps.router,          prefix=f"{API_PREFIX}/traps",     tags=["Traps"])
-app.include_router(alerts.router,         prefix=f"{API_PREFIX}/alerts",    tags=["Alerts"])
 app.include_router(mibs.router,           prefix=f"{API_PREFIX}/mibs",      tags=["MIBs"])
-app.include_router(reports.router,        prefix=f"{API_PREFIX}/reports",   tags=["Reports"])
-app.include_router(settings_router.router,prefix=f"{API_PREFIX}/settings",  tags=["Settings"])
 app.include_router(sync_router.router,    prefix=f"{API_PREFIX}/sync",      tags=["Sync"])
-app.include_router(update_router.router,  prefix=f"{API_PREFIX}/update",    tags=["Update"])
-app.include_router(ws_router.router,      prefix="",                        tags=["WebSocket"])
+app.include_router(internal.router,       prefix=f"{API_PREFIX}/internal",  tags=["Internal"])
+
+# Server-only routers (handled directly by Rust Tauri in desktop mode)
+if not settings.is_desktop:
+    app.include_router(devices.router,        prefix=f"{API_PREFIX}/devices",   tags=["Devices"])
+    app.include_router(discovery.router,      prefix=f"{API_PREFIX}/discovery", tags=["Discovery"])
+    app.include_router(traps.router,          prefix=f"{API_PREFIX}/traps",     tags=["Traps"])
+    app.include_router(alerts.router,         prefix=f"{API_PREFIX}/alerts",    tags=["Alerts"])
+    app.include_router(reports.router,        prefix=f"{API_PREFIX}/reports",   tags=["Reports"])
+    app.include_router(settings_router.router,prefix=f"{API_PREFIX}/settings",  tags=["Settings"])
+    app.include_router(update_router.router,  prefix=f"{API_PREFIX}/update",    tags=["Update"])
+    app.include_router(ws_router.router,      prefix="",                        tags=["WebSocket"])
 
 
 @app.get(f"{API_PREFIX}/ping")
@@ -145,7 +159,7 @@ async def health():
 # Always resolve relative to this file's location so CWD doesn't matter
 FRONTEND_BUILD = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
-if FRONTEND_BUILD.exists():
+if FRONTEND_BUILD.exists() and not settings.is_desktop:
     app.mount("/assets", StaticFiles(directory=str(FRONTEND_BUILD / "assets")), name="assets")
 
     @app.get("/{full_path:path}", include_in_schema=False)

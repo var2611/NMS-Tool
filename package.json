@@ -1,117 +1,22 @@
 {
   "name": "sentinelnms-desktop",
-  "version": "2.2.5",
+  "version": "3.0.0",
   "description": "SentinelNMS — Network Management System by Nav Wireless Technologies",
-  "main": "desktop/main.js",
   "author": {
     "name": "Vardhan Suthar",
     "email": "var2611@gmail.com"
   },
   "license": "MIT",
   "scripts": {
-    "start": "electron .",
-    "dev": "NODE_ENV=development electron .",
-    "build:win": "electron-builder --win",
-    "build:linux": "electron-builder --linux",
-    "build:mac": "electron-builder --mac",
-    "build:all": "electron-builder --win --linux --mac"
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build"
   },
   "dependencies": {
-    "electron-updater": "^6.3.9"
+    "@tauri-apps/plugin-autostart": "^2.5.1",
+    "@tauri-apps/plugin-shell": "^2.3.5"
   },
   "devDependencies": {
-    "electron": "^31.0.0",
-    "electron-builder": "^24.13.3"
-  },
-  "build": {
-    "appId": "com.navwireless.vardhanNMS",
-    "productName": "SentinelNMS",
-    "directories": {
-      "output": "dist-electron"
-    },
-    "publish": [
-      {
-        "provider": "github",
-        "owner": "var2611",
-        "repo": "NMS-Tool",
-        "releaseType": "release"
-      }
-    ],
-    "files": [
-      "desktop/**/*",
-      "backend_entry.py",
-      "requirements.txt",
-      ".env.example",
-      "!**/__pycache__",
-      "!**/*.pyc"
-    ],
-    "extraResources": [
-      {
-        "from": "dist-backend/nms-backend",
-        "to": "nms-backend"
-      },
-      {
-        "from": "frontend/dist",
-        "to": "frontend/dist"
-      },
-      {
-        "from": ".env.example",
-        "to": ".env.example"
-      },
-      {
-        "from": "mibs",
-        "to": "mibs"
-      }
-    ],
-    "win": {
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        }
-      ],
-      "icon": "desktop/icon.ico",
-      "publisherName": "Nav Wireless Technologies",
-      "verifyUpdateCodeSignature": false
-    },
-    "linux": {
-      "target": [
-        {
-          "target": "deb",
-          "arch": [
-            "x64"
-          ]
-        },
-        {
-          "target": "AppImage",
-          "arch": [
-            "x64"
-          ]
-        }
-      ],
-      "icon": "desktop/icon.png",
-      "category": "Network"
-    },
-    "mac": {
-      "target": [
-        {
-          "target": "dmg",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
-        }
-      ],
-      "icon": "desktop/icon.icns"
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "shortcutName": "NMS-Tool"
-    }
+    "@tauri-apps/cli": "^2.11.2"
   }
 }

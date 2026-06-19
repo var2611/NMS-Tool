@@ -125,8 +125,9 @@ NMS-Tool/
 ├── frontend/           React 18 + Tailwind + Recharts
 │   └── src/pages/      Dashboard, Devices, Discovery, Traps, Alerts, MIBs, Reports, Settings
 │
-├── desktop/            Electron wrapper (desktop installer)
-│   └── main.js         Spawns Python backend, shows browser window
+├── src-tauri/          Tauri v2 + Rust Desktop wrapper (Mac/Win/Linux app shell)
+│   ├── Cargo.toml      Rust dependency manifest
+│   └── src/            Rust background poller, trap listener, and main window lifecycle
 │
 ├── server/             Server deployment
 │   ├── docker-compose.yml

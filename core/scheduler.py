@@ -24,10 +24,11 @@ class PollingScheduler:
         # {device_id: {iface_index: {bytes_in, bytes_out, timestamp}}}
         self._prev_bytes: Dict[int, Dict[int, Dict]] = {}
 
-    async def start(self):
+    async def start(self, poll: bool = True):
         self._running = True
         logger.info("Polling scheduler started")
-        asyncio.create_task(self._manage_poll_tasks())
+        if poll:
+            asyncio.create_task(self._manage_poll_tasks())
         asyncio.create_task(self._metrics_pruner())
 
     async def stop(self):
@@ -331,18 +332,90 @@ class PollingScheduler:
         await sync_agent.queue_entity("metric", device_id, "create", metric_payload)
 
     async def _metrics_pruner(self):
-        """Delete device_metrics rows older than 30 days. Runs once per day."""
+        """Clean up database storage. Runs once per day."""
         while self._running:
             try:
-                cutoff = datetime.utcnow() - timedelta(days=30)
+                from core.database import SyncStatus, SyncQueue, Alert, AlertSeverity, AlertStatus
+                from sqlalchemy import func, select
+
+                now = datetime.utcnow()
+                cutoff_30d = now - timedelta(days=30)
+                cutoff_24h = now - timedelta(hours=24)
+
                 async with AsyncSessionLocal() as session:
+                    # 1. Safe Pruning: delete synced metrics older than 30 days
                     result = await session.execute(
-                        delete(DeviceMetric).where(DeviceMetric.timestamp < cutoff)
+                        delete(DeviceMetric).where(
+                            DeviceMetric.timestamp < cutoff_30d,
+                            DeviceMetric.sync_status == SyncStatus.synced
+                        )
                     )
-                    deleted = result.rowcount
+                    deleted_metrics = result.rowcount
+
+                    # 2. Sync Queue Pruning: delete synced queue items older than 24 hours
+                    result_queue = await session.execute(
+                        delete(SyncQueue).where(
+                            SyncQueue.created_at < cutoff_24h,
+                            SyncQueue.status == SyncStatus.synced
+                        )
+                    )
+                    deleted_queue = result_queue.rowcount
+
+                    # Log safe deletes
+                    if deleted_metrics or deleted_queue:
+                        logger.info(
+                            f"Pruner: Deleted {deleted_metrics} synced metrics (>30d) "
+                            f"and {deleted_queue} synced queue items (>24h)"
+                        )
+
+                    # 3. Emergency Pruning: Cap metrics table to 20 Million rows
+                    count_result = await session.execute(select(func.count(DeviceMetric.id)))
+                    total_rows = count_result.scalar() or 0
+
+                    EMERGENCY_LIMIT = 20_000_000
+                    if total_rows > EMERGENCY_LIMIT:
+                        excess = total_rows - EMERGENCY_LIMIT
+                        logger.warning(f"Database row count ({total_rows}) exceeds emergency limit ({EMERGENCY_LIMIT}). Pruning {excess} rows...")
+
+                        # 3a. Delete oldest synced metrics first
+                        subq = select(DeviceMetric.id).where(DeviceMetric.sync_status == SyncStatus.synced).order_by(DeviceMetric.timestamp.asc()).limit(excess).subquery()
+                        result_synced = await session.execute(
+                            delete(DeviceMetric).where(DeviceMetric.id.in_(select(subq.c.id)))
+                        )
+                        deleted_synced = result_synced.rowcount
+                        logger.info(f"Emergency Pruner: Deleted {deleted_synced} oldest synced metrics")
+
+                        # Recount
+                        count_result = await session.execute(select(func.count(DeviceMetric.id)))
+                        total_rows = count_result.scalar() or 0
+
+                        if total_rows > EMERGENCY_LIMIT:
+                            excess = total_rows - EMERGENCY_LIMIT
+                            # 3b. Delete oldest pending/unsynced metrics as a last resort
+                            subq_unsynced = select(DeviceMetric.id).order_by(DeviceMetric.timestamp.asc()).limit(excess).subquery()
+                            result_unsynced = await session.execute(
+                                delete(DeviceMetric).where(DeviceMetric.id.in_(select(subq_unsynced.c.id)))
+                            )
+                            deleted_unsynced = result_unsynced.rowcount
+                            logger.error(
+                                f"Emergency Pruner: Deleted {deleted_unsynced} unsynced metrics. "
+                                f"Storage cap breached."
+                            )
+
+                            # Fire system alert warning
+                            alert = Alert(
+                                title="Storage Limit Reached",
+                                message=(
+                                    f"SentinelNMS has pruned {deleted_unsynced} unsynced metrics "
+                                    f"to prevent local SQLite database lockup (breached {EMERGENCY_LIMIT} limit)."
+                                ),
+                                severity=AlertSeverity.critical,
+                                status=AlertStatus.new,
+                                source="system",
+                            )
+                            session.add(alert)
+
                     await session.commit()
-                    if deleted:
-                        logger.info(f"Metrics pruner: deleted {deleted} rows older than 30 days")
             except Exception as e:
                 logger.error(f"Metrics pruner error: {e}")
             await asyncio.sleep(86400)

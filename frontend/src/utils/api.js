@@ -1,6 +1,63 @@
 import axios from 'axios'
 
-const api = axios.create({ baseURL: '/api/v1', timeout: 30000 })
+const tauriAdapter = async (config) => {
+  return new Promise(async (resolve, reject) => {
+    try {
+      const invoke = window.__TAURI__?.core?.invoke || window.__TAURI__?.invoke;
+      if (!invoke) {
+        // Fallback to normal HTTP requests if running outside Tauri
+        const httpAdapter = axios.defaults.adapter;
+        if (typeof httpAdapter === 'function') {
+          return httpAdapter(config).then(resolve).catch(reject);
+        } else {
+          const fetchAdapter = (await import('axios/lib/adapters/xhr.js')).default;
+          return fetchAdapter(config).then(resolve).catch(reject);
+        }
+      }
+
+      // Format path: remove base URL if present
+      let urlPath = config.url;
+      if (urlPath.startsWith('/api/v1')) {
+        urlPath = urlPath.replace('/api/v1', '');
+      } else if (urlPath.startsWith(config.baseURL || '')) {
+        urlPath = urlPath.replace(config.baseURL || '', '');
+      }
+
+      // Invoke the Tauri command
+      const responseData = await invoke("handle_api_request", {
+        url: urlPath,
+        method: config.method.toUpperCase(),
+        params: config.params || {},
+        data: config.data ? JSON.parse(JSON.stringify(config.data)) : null
+      });
+
+      resolve({
+        data: responseData,
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config
+      });
+    } catch (err) {
+      console.error("Tauri IPC API error:", err);
+      reject({
+        response: {
+          data: { detail: err.toString() },
+          status: 400,
+          statusText: 'Bad Request',
+          headers: {},
+          config
+        }
+      });
+    }
+  });
+};
+
+const api = axios.create({
+  baseURL: '/api/v1',
+  timeout: 30000,
+  adapter: tauriAdapter
+})
 
 api.interceptors.request.use(cfg => {
   const token = localStorage.getItem('nms_token')

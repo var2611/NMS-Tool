@@ -1,6 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-from sqlalchemy import String, Integer, Float, Boolean, DateTime, Text, JSON, ForeignKey, Enum
+from sqlalchemy import String, Integer, Float, Boolean, DateTime, Text, JSON, ForeignKey, Enum, Index, event
 from datetime import datetime
 from typing import Optional, List
 import enum
@@ -8,11 +8,27 @@ from core.config import settings
 
 # ─── Engine & Session ────────────────────────────────────────────────────────
 
+# Pass timeout to sqlite connection to handle lock contention
+connect_args = {}
+if settings.get_database_url and "sqlite" in settings.get_database_url:
+    connect_args = {"timeout": 5.0}
+
 engine = create_async_engine(
     settings.get_database_url,
+    connect_args=connect_args,
     echo=settings.debug,
     future=True
 )
+
+@event.listens_for(engine.sync_engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    try:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.close()
+    except Exception:
+        pass
 
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -141,6 +157,9 @@ class Device(Base):
 
 class DeviceMetric(Base):
     __tablename__ = "device_metrics"
+    __table_args__ = (
+        Index('idx_device_metrics_device_timestamp', 'device_id', 'timestamp'),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     # Nullable: synced metrics may arrive before the device is registered on the server
@@ -172,6 +191,9 @@ class DeviceMetric(Base):
     # Extra custom metrics (from MIBs)
     custom_metrics: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     
+    # Sync status for metrics pruning and syncing
+    sync_status: Mapped[SyncStatus] = mapped_column(Enum(SyncStatus), default=SyncStatus.pending)
+
     # Relationships
     device: Mapped["Device"] = relationship("Device", back_populates="metrics")
 
@@ -376,6 +398,7 @@ _MIGRATIONS = [
     ("devices", "associated_device_id", "INTEGER"),
     ("users",   "full_name",     "VARCHAR(200)"),
     ("users",   "allowed_sites", "JSON" ),
+    ("device_metrics", "sync_status", "VARCHAR(20) DEFAULT 'pending'"),
 ]
 
 async def _run_migrations(conn):
@@ -410,6 +433,15 @@ async def _run_migrations(conn):
                 ))
             except Exception:
                 pass  # Already nullable or doesn't exist yet
+
+        # 3. Create composite index on device_metrics (device_id, timestamp)
+        try:
+            sync_conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS idx_device_metrics_device_timestamp "
+                "ON device_metrics (device_id, timestamp DESC)"
+            ))
+        except Exception:
+            pass
 
     await conn.run_sync(_migrate)
 
