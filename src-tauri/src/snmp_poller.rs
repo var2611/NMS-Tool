@@ -70,6 +70,7 @@ pub struct PolledMetrics {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum OwnedValue {
     Integer(i64),
     OctetString(Vec<u8>),
@@ -96,6 +97,7 @@ fn to_owned_value(val: &snmp2::Value) -> OwnedValue {
     }
 }
 
+#[allow(dead_code)]
 pub struct Device {
     pub id: i32,
     pub ip_address: String,
