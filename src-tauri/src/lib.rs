@@ -1293,6 +1293,7 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_log::Builder::new().build())
         .manage(SidecarChild(Mutex::new(None)))
         .manage(ApiPort(port))
         .manage(SecretToken(token.clone()))
@@ -1345,8 +1346,17 @@ pub fn run() {
             let db_path = app_dir.join("nms.db").to_string_lossy().to_string();
             let log_path = app_dir.join("nms.log").to_string_lossy().to_string();
 
+            // Pre-create the database file if it does not exist to prevent sqlx connection failure
+            let db_file_path = std::path::Path::new(&db_path);
+            if !db_file_path.exists() {
+                if let Some(parent) = db_file_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::File::create(db_file_path);
+            }
+
             // Create SQLite Connection Pool and manage it
-            let db_url = format!("sqlite://{}", db_path);
+            let db_url = format!("sqlite://{}?mode=rwc", db_path);
             let pool = tauri::async_runtime::block_on(async {
                 sqlx::sqlite::SqlitePoolOptions::new()
                     .max_connections(10)
