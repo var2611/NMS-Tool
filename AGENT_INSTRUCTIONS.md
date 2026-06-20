@@ -2,6 +2,19 @@
 > **For AI coding agents (Cursor, Claude, Copilot, GPT-4, etc.)**
 > Read this entire file before touching any code. It maps every file, every responsibility, every data flow, and every rule for safe edits.
 
+> [!IMPORTANT]
+> **COMPULSORY PRE-COMMIT RUN:**
+> Before committing any frontend changes, you **MUST** run the React frontend build command locally to compile production assets:
+> ```bash
+> npm run build --prefix app/frontend
+> ```
+> Since the GitHub Actions CI workflow does not compile the frontend on remote runners (to optimize build times), failing to build locally will cause the desktop/server builds to use stale assets.
+>
+> You can enforce this automatically by making sure the git pre-commit hook is active:
+> ```bash
+> chmod +x .git/hooks/pre-commit
+> ```
+
 ---
 
 ## 1. Project Overview

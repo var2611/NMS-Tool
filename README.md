@@ -37,6 +37,19 @@ bash scripts/start.sh dev
 
 Open **http://localhost:8765** — login: **admin / admin**
 
+### 4. Local Frontend Build & Git Pre-Commit Hook (Compulsory)
+To keep remote workflow build times short, the GitHub Actions CI does **not** compile the React frontend. Instead, it packages the static files from `app/frontend/dist/` which must be built locally and committed.
+
+Before committing any frontend changes, you must compile the assets locally:
+```bash
+npm run build --prefix app/frontend
+```
+
+To automate this step and make sure it is run before every commit, make the pre-commit hook executable:
+```bash
+chmod +x .git/hooks/pre-commit
+```
+
 ---
 
 ## Features
