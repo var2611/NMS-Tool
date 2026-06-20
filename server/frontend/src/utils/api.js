@@ -24,11 +24,23 @@ const tauriAdapter = async (config) => {
       }
 
       // Invoke the Tauri command
+      const parsedData = (() => {
+        if (!config.data) return null;
+        if (typeof config.data === 'string') {
+          try {
+            return JSON.parse(config.data);
+          } catch (e) {
+            return config.data;
+          }
+        }
+        return config.data;
+      })();
+
       const responseData = await invoke("handle_api_request", {
         url: urlPath,
         method: config.method.toUpperCase(),
         params: config.params || {},
-        data: config.data ? JSON.parse(JSON.stringify(config.data)) : null
+        data: parsedData
       });
 
       resolve({
