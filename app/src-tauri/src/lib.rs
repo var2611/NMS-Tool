@@ -364,7 +364,7 @@ async fn handle_api_request(
             let now = chrono::Utc::now().naive_utc().to_string();
 
             let insert_res = sqlx::query(
-                "INSERT INTO devices (name, ip_address, device_type, status, snmp_version, snmp_community, snmp_port, poll_interval, notes, tags, mib_id, latitude, longitude, associated_device_id, is_active, auto_discovered, source, created_at, updated_at, consecutive_failures) VALUES (?, ?, ?, 'unknown', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 'manual', ?, ?, 0)"
+                "INSERT INTO devices (name, ip_address, device_type, status, snmp_version, snmp_community, snmp_port, poll_interval, notes, tags, mib_id, latitude, longitude, associated_device_id, is_active, auto_discovered, source, created_at, updated_at, consecutive_failures, sync_status) VALUES (?, ?, ?, 'unknown', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 'manual', ?, ?, 0, 'pending')"
             )
             .bind(name)
             .bind(ip_address)
