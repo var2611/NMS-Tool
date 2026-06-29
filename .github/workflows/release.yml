@@ -58,7 +58,7 @@ jobs:
         id: ver
         run: |
           # Read current version from package.json
-          CURRENT=$(python3 -c "import json; print(json.load(open('package.json'))['version'])")
+          CURRENT=$(python3 -c "import json; print(json.load(open('app/package.json'))['version'])")
           echo "Current version: $CURRENT"
 
           EXACT="${{ github.event.inputs.exact_version }}"
@@ -99,12 +99,12 @@ jobs:
           python3 - << 'PYEOF'
           import json, re
           NEW = "${{ steps.ver.outputs.new }}"
-          with open("package.json") as f: data = json.load(f)
+          with open("app/package.json") as f: data = json.load(f)
           data["version"] = NEW
-          with open("package.json", "w") as f: json.dump(data, f, indent=2)
+          with open("app/package.json", "w") as f: json.dump(data, f, indent=2)
           # json.dump strips trailing newline — add it back
-          open("package.json", "a").write("\n")
-          print(f"package.json → {NEW}")
+          open("app/package.json", "a").write("\n")
+          print(f"app/package.json → {NEW}")
           PYEOF
 
       - name: Update frontend/package.json
@@ -112,11 +112,11 @@ jobs:
           python3 - << 'PYEOF'
           import json
           NEW = "${{ steps.ver.outputs.new }}"
-          with open("frontend/package.json") as f: data = json.load(f)
+          with open("app/frontend/package.json") as f: data = json.load(f)
           data["version"] = NEW
-          with open("frontend/package.json", "w") as f: json.dump(data, f, indent=2)
-          open("frontend/package.json", "a").write("\n")
-          print(f"frontend/package.json → {NEW}")
+          with open("app/frontend/package.json", "w") as f: json.dump(data, f, indent=2)
+          open("app/frontend/package.json", "a").write("\n")
+          print(f"app/frontend/package.json → {NEW}")
           PYEOF
 
       - name: Update core/config.py
@@ -124,14 +124,14 @@ jobs:
           python3 - << 'PYEOF'
           import re
           NEW = "${{ steps.ver.outputs.new }}"
-          with open("core/config.py") as f: content = f.read()
+          with open("app/core/config.py") as f: content = f.read()
           updated = re.sub(
               r'(app_version\s*:\s*str\s*=\s*")[^"]+(")',
               rf'\g<1>{NEW}\g<2>',
               content
           )
-          with open("core/config.py", "w") as f: f.write(updated)
-          print(f"core/config.py → {NEW}")
+          with open("app/core/config.py", "w") as f: f.write(updated)
+          print(f"app/core/config.py → {NEW}")
           PYEOF
 
       - name: Show diff
@@ -140,7 +140,7 @@ jobs:
       # ── Commit, tag, push ─────────────────────────────────────────────────
       - name: Commit version bump
         run: |
-          git add package.json frontend/package.json core/config.py
+          git add app/package.json app/frontend/package.json app/core/config.py
           git diff --cached --quiet || git commit -m "chore: bump version to ${{ steps.ver.outputs.tag }}"
 
       - name: Create and push tag
@@ -204,7 +204,7 @@ jobs:
 
       # Frontend must be built BEFORE PyInstaller (PyInstaller bundles frontend/dist)
       - name: Build React frontend
-        working-directory: frontend
+        working-directory: app/frontend
         run: |
           npm ci
           npm run build
@@ -213,10 +213,11 @@ jobs:
         shell: bash
         run: |
           python3 -m pip install --upgrade pip -q
-          python3 -m pip install -r requirements.txt pyinstaller -q
+          python3 -m pip install -r app/requirements.txt pyinstaller -q
 
       - name: Build standalone backend binary (PyInstaller)
         shell: bash
+        working-directory: app
         run: |
           if [[ "${{ runner.os }}" == "Windows" ]]; then SEP=";"; else SEP=":"; fi
 
@@ -280,6 +281,7 @@ jobs:
           echo "=== PyInstaller output ===" && ls -lh dist-backend/nms-backend/ | head -6
 
       - name: Install Electron + electron-updater
+        working-directory: app
         run: npm install
 
       # electron-builder --publish always:
@@ -289,6 +291,7 @@ jobs:
       # CSC_IDENTITY_AUTO_DISCOVERY=false skips macOS code-signing in CI.
       # Add CSC_LINK + CSC_KEY_PASSWORD secrets to enable proper signing.
       - name: Build and publish installer
+        working-directory: app
         run: ${{ matrix.build_cmd }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -297,4 +300,5 @@ jobs:
 
       - name: List output files
         shell: bash
+        working-directory: app
         run: ls -lh dist-electron/
