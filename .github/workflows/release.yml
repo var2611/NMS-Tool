@@ -206,7 +206,7 @@ jobs:
       - name: Build React frontend
         working-directory: app/frontend
         run: |
-          npm ci
+          npm install
           npm run build
 
       - name: Install Python deps + PyInstaller
