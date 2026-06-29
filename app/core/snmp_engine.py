@@ -380,27 +380,35 @@ async def poll_device(device: Dict) -> Dict:
                 elif "disk" in descr or descr.strip() == "/" or "c:" in descr or "d:" in descr:
                     metrics["disk_percent"] = pct
 
-        # Interface bandwidth — walk up to 64 interfaces so user-selected high-index
-        # adapters (e.g. Intel Ethernet at index 16+) are always captured
-        if_status = await snmp_walk(ip, STANDARD_OIDS["ifOperStatus"], community=community, max_rows=64)
-        if_in    = await snmp_walk(ip, STANDARD_OIDS["ifInOctets"],    community=community, max_rows=64)
-        if_out   = await snmp_walk(ip, STANDARD_OIDS["ifOutOctets"],   community=community, max_rows=64)
-        if_descr = await snmp_walk(ip, STANDARD_OIDS["ifDescr"],       community=community, max_rows=64)
+        # Interface bandwidth — only walk interfaces that the user has explicitly
+        # selected for monitoring.  New devices start with no monitored interfaces
+        # (ping + basic SNMP only) until the user chooses ports in the UI.
+        monitored_indexes = set(
+            (device.get("tags") or {}).get("monitored_interfaces", [])
+        )
 
         interfaces = []
-        for oid, status in if_status.items():
-            idx = oid.split(".")[-1]
-            descr_oid = f"1.3.6.1.2.1.2.2.1.2.{idx}"
-            in_oid = f"1.3.6.1.2.1.2.2.1.10.{idx}"
-            out_oid = f"1.3.6.1.2.1.2.2.1.16.{idx}"
-            raw_name = if_descr.get(descr_oid, f"if{idx}")
-            interfaces.append({
-                "index": int(idx),
-                "name": _decode_snmp_string(raw_name, f"if{idx}"),  # decode hex names
-                "status": "up" if status == "1" else "down",
-                "bytes_in": int(if_in.get(in_oid, 0) or 0),
-                "bytes_out": int(if_out.get(out_oid, 0) or 0),
-            })
+        if monitored_indexes:
+            if_status = await snmp_walk(ip, STANDARD_OIDS["ifOperStatus"], community=community, max_rows=64)
+            if_in    = await snmp_walk(ip, STANDARD_OIDS["ifInOctets"],    community=community, max_rows=64)
+            if_out   = await snmp_walk(ip, STANDARD_OIDS["ifOutOctets"],   community=community, max_rows=64)
+            if_descr = await snmp_walk(ip, STANDARD_OIDS["ifDescr"],       community=community, max_rows=64)
+
+            for oid, status in if_status.items():
+                idx = oid.split(".")[-1]
+                if int(idx) not in monitored_indexes:
+                    continue
+                descr_oid = f"1.3.6.1.2.1.2.2.1.2.{idx}"
+                in_oid = f"1.3.6.1.2.1.2.2.1.10.{idx}"
+                out_oid = f"1.3.6.1.2.1.2.2.1.16.{idx}"
+                raw_name = if_descr.get(descr_oid, f"if{idx}")
+                interfaces.append({
+                    "index": int(idx),
+                    "name": _decode_snmp_string(raw_name, f"if{idx}"),
+                    "status": "up" if status == "1" else "down",
+                    "bytes_in": int(if_in.get(in_oid, 0) or 0),
+                    "bytes_out": int(if_out.get(out_oid, 0) or 0),
+                })
         if interfaces:
             metrics["interfaces"] = interfaces
 

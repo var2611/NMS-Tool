@@ -229,14 +229,24 @@ pub async fn poll_device_single(
     let device_type = r.try_get::<Option<String>, _>("device_type").unwrap_or(None).unwrap_or_else(|| "unknown".to_string());
     let current_failures = get_opt_int_column(&r, "consecutive_failures").unwrap_or(0);
     let tags_str = r.try_get::<Option<String>, _>("tags").unwrap_or(None);
-    let tags = tags_str.and_then(|s| serde_json::from_str(&s).ok());
+    let tags: Option<serde_json::Value> = tags_str.and_then(|s| serde_json::from_str(&s).ok());
+
+    // Extract monitored_interfaces from tags — only poll these interfaces
+    let monitored_ifaces: Vec<u32> = tags
+        .as_ref()
+        .and_then(|t| t.as_object())
+        .and_then(|o| o.get("monitored_interfaces"))
+        .and_then(|i| i.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_u64()).map(|v| v as u32).collect())
+        .unwrap_or_default();
 
     // Perform ping latency test
     let ping_ms = ping_latency(&ip, 2.0).await;
 
     // Perform SNMP query in blocking pool since it uses sync sessions
+    let monitored_for_poll = monitored_ifaces.clone();
     let metrics_res = tokio::task::spawn_blocking(move || {
-        snmp_query_device(&ip, port, &community, &version, &device_type, timeout_secs)
+        snmp_query_device(&ip, port, &community, &version, &device_type, timeout_secs, &monitored_for_poll)
     })
     .await;
 
@@ -393,19 +403,7 @@ pub async fn poll_device_single(
     let mut primary_in_mbps = None;
     let mut primary_out_mbps = None;
 
-    // Parse monitored interface list from device tags if present
-    let monitored_ifaces = tags
-        .as_ref()
-        .and_then(|t: &serde_json::Value| t.as_object())
-        .and_then(|o: &serde_json::Map<String, serde_json::Value>| o.get("monitored_interfaces"))
-        .and_then(|i: &serde_json::Value| i.as_array())
-        .map(|a: &Vec<serde_json::Value>| {
-            a.iter()
-                .filter_map(|v: &serde_json::Value| v.as_u64())
-                .map(|v: u64| v as u32)
-                .collect::<Vec<u32>>()
-        })
-        .unwrap_or_default();
+    // Use the monitored_ifaces list already extracted above
 
     let primary_if = if !monitored_ifaces.is_empty() {
         polled.interfaces.iter().find(|i| monitored_ifaces.contains(&i.index))
@@ -552,6 +550,9 @@ async fn ping_latency(ip: &str, timeout_secs: f64) -> Option<f64> {
 }
 
 // Synchronously query the device using SNMP
+// `monitored_ifaces` controls which interfaces are polled for bandwidth.
+// If empty, the interface walk is skipped entirely (new devices start with
+// ping-only until the user selects interfaces in the UI).
 fn snmp_query_device(
     ip: &str,
     port: u16,
@@ -559,6 +560,7 @@ fn snmp_query_device(
     version: &str,
     device_type: &str,
     timeout_secs: u64,
+    monitored_ifaces: &[u32],
 ) -> Result<PolledMetrics, String> {
     use snmp2::{SyncSession, Oid};
     
@@ -643,63 +645,73 @@ fn snmp_query_device(
         }
     }
 
-    // 4. Walk interfaces
+    // 4. Walk interfaces — ONLY if the user has selected interfaces to monitor.
+    //    New devices start with zero monitored interfaces (ping-only).
+    //    The user must open "Interface Monitoring", select ports, and save.
     let mut interfaces = Vec::new();
-    let if_status_oid = Oid::from(OID_IF_OPER_STATUS).unwrap();
-    let if_in_oid = Oid::from(OID_IF_IN_OCTETS).unwrap();
-    let if_out_oid = Oid::from(OID_IF_OUT_OCTETS).unwrap();
-    let if_descr_oid = Oid::from(OID_IF_DESCR).unwrap();
 
-    let if_statuses = snmp_walk_session(&mut sess, &if_status_oid).unwrap_or_default();
-    let if_ins = snmp_walk_session(&mut sess, &if_in_oid).unwrap_or_default();
-    let if_outs = snmp_walk_session(&mut sess, &if_out_oid).unwrap_or_default();
-    let if_descrs = snmp_walk_session(&mut sess, &if_descr_oid).unwrap_or_default();
+    if !monitored_ifaces.is_empty() {
+        let if_status_oid = Oid::from(OID_IF_OPER_STATUS).unwrap();
+        let if_in_oid = Oid::from(OID_IF_IN_OCTETS).unwrap();
+        let if_out_oid = Oid::from(OID_IF_OUT_OCTETS).unwrap();
+        let if_descr_oid = Oid::from(OID_IF_DESCR).unwrap();
 
-    for (oid, val) in &if_statuses {
-        let parts: Vec<&str> = oid.split('.').collect::<Vec<&str>>();
-        if let Some(idx_str) = parts.last() {
-            if let Ok(idx) = idx_str.parse::<u32>() {
-                let status_val = match val {
-                    OwnedValue::Integer(i) => *i,
-                    _ => 2, // down
-                };
+        let if_statuses = snmp_walk_session(&mut sess, &if_status_oid).unwrap_or_default();
+        let if_ins = snmp_walk_session(&mut sess, &if_in_oid).unwrap_or_default();
+        let if_outs = snmp_walk_session(&mut sess, &if_out_oid).unwrap_or_default();
+        let if_descrs = snmp_walk_session(&mut sess, &if_descr_oid).unwrap_or_default();
 
-                let in_key = format!("1.3.6.1.2.1.2.2.1.10.{}", idx_str);
-                let out_key = format!("1.3.6.1.2.1.2.2.1.16.{}", idx_str);
-                let desc_key = format!("1.3.6.1.2.1.2.2.1.2.{}", idx_str);
+        for (oid, val) in &if_statuses {
+            let parts: Vec<&str> = oid.split('.').collect::<Vec<&str>>();
+            if let Some(idx_str) = parts.last() {
+                if let Ok(idx) = idx_str.parse::<u32>() {
+                    // Only include interfaces that the user selected for monitoring
+                    if !monitored_ifaces.contains(&idx) {
+                        continue;
+                    }
 
-                let bytes_in = if_ins.get(&in_key).and_then(|v| match v {
-                    OwnedValue::Counter(c) => Some(*c),
-                    OwnedValue::Integer(i) => Some(*i as u64),
-                    _ => None
-                }).unwrap_or(0);
+                    let status_val = match val {
+                        OwnedValue::Integer(i) => *i,
+                        _ => 2, // down
+                    };
 
-                let bytes_out = if_outs.get(&out_key).and_then(|v| match v {
-                    OwnedValue::Counter(c) => Some(*c),
-                    OwnedValue::Integer(i) => Some(*i as u64),
-                    _ => None
-                }).unwrap_or(0);
+                    let in_key = format!("1.3.6.1.2.1.2.2.1.10.{}", idx_str);
+                    let out_key = format!("1.3.6.1.2.1.2.2.1.16.{}", idx_str);
+                    let desc_key = format!("1.3.6.1.2.1.2.2.1.2.{}", idx_str);
 
-                let name = if_descrs.get(&desc_key).map(|v| match v {
-                    OwnedValue::OctetString(b) => String::from_utf8_lossy(b).into_owned(),
-                    _ => format!("if{}", idx)
-                }).unwrap_or_else(|| format!("if{}", idx));
+                    let bytes_in = if_ins.get(&in_key).and_then(|v| match v {
+                        OwnedValue::Counter(c) => Some(*c),
+                        OwnedValue::Integer(i) => Some(*i as u64),
+                        _ => None
+                    }).unwrap_or(0);
 
-                interfaces.push(InterfaceMetric {
-                    index: idx,
-                    name,
-                    status: if status_val == 1 { "up".to_string() } else { "down".to_string() },
-                    bytes_in,
-                    bytes_out,
-                    in_mbps: None,
-                    out_mbps: None,
-                });
+                    let bytes_out = if_outs.get(&out_key).and_then(|v| match v {
+                        OwnedValue::Counter(c) => Some(*c),
+                        OwnedValue::Integer(i) => Some(*i as u64),
+                        _ => None
+                    }).unwrap_or(0);
+
+                    let name = if_descrs.get(&desc_key).map(|v| match v {
+                        OwnedValue::OctetString(b) => String::from_utf8_lossy(b).into_owned(),
+                        _ => format!("if{}", idx)
+                    }).unwrap_or_else(|| format!("if{}", idx));
+
+                    interfaces.push(InterfaceMetric {
+                        index: idx,
+                        name,
+                        status: if status_val == 1 { "up".to_string() } else { "down".to_string() },
+                        bytes_in,
+                        bytes_out,
+                        in_mbps: None,
+                        out_mbps: None,
+                    });
+                }
             }
         }
-    }
 
-    // Sort interfaces by index
-    interfaces.sort_by_key(|i| i.index);
+        // Sort interfaces by index
+        interfaces.sort_by_key(|i| i.index);
+    }
 
     // 5. Printer metrics
     let mut supplies = Vec::new();
@@ -863,3 +875,105 @@ fn snmp_walk_session(
     }
     Ok(results)
 }
+
+// Live SNMP walk to list device interfaces
+pub fn list_device_interfaces_snmp(
+    ip: &str,
+    community: &str,
+    version: &str,
+    port: u16,
+    timeout_secs: u64,
+) -> Result<serde_json::Value, String> {
+    use snmp2::{SyncSession, Oid};
+    
+    let addr = format!("{}:{}", ip, port);
+    let timeout = Duration::from_secs(timeout_secs);
+    
+    let mut sess = if version == "v1" {
+        SyncSession::new_v1(&addr, community.as_bytes(), Some(timeout), 1)
+    } else {
+        SyncSession::new_v2c(&addr, community.as_bytes(), Some(timeout), 1)
+    }.map_err(|e| e.to_string())?;
+
+    let if_descr_oid = Oid::from(&[1, 3, 6, 1, 2, 1, 2, 2, 1, 2]).unwrap();
+    let if_status_oid = Oid::from(&[1, 3, 6, 1, 2, 1, 2, 2, 1, 8]).unwrap();
+    let if_speed_oid = Oid::from(&[1, 3, 6, 1, 2, 1, 2, 2, 1, 5]).unwrap();
+    let if_in_oid = Oid::from(&[1, 3, 6, 1, 2, 1, 2, 2, 1, 10]).unwrap();
+    let if_out_oid = Oid::from(&[1, 3, 6, 1, 2, 1, 2, 2, 1, 16]).unwrap();
+
+    let if_descrs = snmp_walk_session(&mut sess, &if_descr_oid).unwrap_or_default();
+    let if_statuses = snmp_walk_session(&mut sess, &if_status_oid).unwrap_or_default();
+    let if_speeds = snmp_walk_session(&mut sess, &if_speed_oid).unwrap_or_default();
+    let if_ins = snmp_walk_session(&mut sess, &if_in_oid).unwrap_or_default();
+    let if_outs = snmp_walk_session(&mut sess, &if_out_oid).unwrap_or_default();
+
+    let mut interfaces = Vec::new();
+
+    for (oid, val) in &if_descrs {
+        let parts: Vec<&str> = oid.split('.').collect::<Vec<&str>>();
+        if let Some(idx_str) = parts.last() {
+            if let Ok(idx) = idx_str.parse::<u32>() {
+                let name = match val {
+                    OwnedValue::OctetString(b) => {
+                        let s = String::from_utf8_lossy(b).into_owned();
+                        s.trim_matches('\0').trim().to_string()
+                    }
+                    _ => format!("if{}", idx)
+                };
+
+                let status_val = if_statuses.get(&format!("1.3.6.1.2.1.2.2.1.8.{}", idx_str))
+                    .and_then(|v| match v {
+                        OwnedValue::Integer(i) => Some(*i),
+                        _ => None,
+                    }).unwrap_or(2);
+
+                let speed_raw = if_speeds.get(&format!("1.3.6.1.2.1.2.2.1.5.{}", idx_str))
+                    .and_then(|v| match v {
+                        OwnedValue::Integer(i) => Some(*i),
+                        OwnedValue::Counter(c) => Some(*c as i64),
+                        _ => None,
+                    }).unwrap_or(0);
+
+                let bytes_in = if_ins.get(&format!("1.3.6.1.2.1.2.2.1.10.{}", idx_str))
+                    .and_then(|v| match v {
+                        OwnedValue::Counter(c) => Some(*c),
+                        OwnedValue::Integer(i) => Some(*i as u64),
+                        _ => None,
+                    }).unwrap_or(0);
+
+                let bytes_out = if_outs.get(&format!("1.3.6.1.2.1.2.2.1.16.{}", idx_str))
+                    .and_then(|v| match v {
+                        OwnedValue::Counter(c) => Some(*c),
+                        OwnedValue::Integer(i) => Some(*i as u64),
+                        _ => None,
+                    }).unwrap_or(0);
+
+                interfaces.push(serde_json::json!({
+                    "index": idx,
+                    "name": name,
+                    "status": if status_val == 1 { "up" } else { "down" },
+                    "speed_mbps": ((speed_raw as f64) / 1_000_000.0 * 10.0).round() / 10.0,
+                    "bytes_in": bytes_in,
+                    "bytes_out": bytes_out,
+                }));
+            }
+        }
+    }
+
+    interfaces.sort_by_key(|i| i.get("index").and_then(|v| v.as_u64()).unwrap_or(0));
+
+    Ok(serde_json::Value::Array(interfaces))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_list_interfaces() {
+        let res = list_device_interfaces_snmp("172.16.17.54", "public", "v2c", 161, 5);
+        println!("TEST RESULT: {:#?}", res);
+    }
+}
+
+

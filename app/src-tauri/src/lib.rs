@@ -806,6 +806,52 @@ async fn handle_api_request(
             Ok(serde_json::Value::Array(list))
         }
 
+        ("GET", ["devices", id_str, "interfaces"]) if id_str.parse::<i32>().is_ok() => {
+            let id = id_str.parse::<i32>().unwrap();
+            let row = sqlx::query("SELECT ip_address, snmp_community, snmp_version, snmp_port, tags FROM devices WHERE id = ?")
+                .bind(id)
+                .fetch_optional(&*pool).await.map_err(|e| e.to_string())?;
+            let row = match row {
+                Some(r) => r,
+                None => return Err("Device not found".to_string()),
+            };
+
+            let ip: String = row.try_get("ip_address").unwrap_or_default();
+            let community: String = row.try_get::<Option<String>, _>("snmp_community").unwrap_or(None).unwrap_or_else(|| "public".to_string());
+            let version: String = row.try_get::<Option<String>, _>("snmp_version").unwrap_or(None).unwrap_or_else(|| "v2c".to_string());
+            let snmp_port = get_opt_int_column(&row, "snmp_port").unwrap_or(161);
+            let tags_str: Option<String> = row.try_get("tags").unwrap_or(None);
+            let tags: serde_json::Value = tags_str.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(serde_json::json!({}));
+
+            // Run the SNMP walk in a blocking thread since SyncSession does blocking IO
+            let ip_clone = ip.clone();
+            let community_clone = community.clone();
+            let version_clone = version.clone();
+            let interfaces = tokio::task::spawn_blocking(move || {
+                snmp_poller::list_device_interfaces_snmp(
+                    &ip_clone,
+                    &community_clone,
+                    &version_clone,
+                    snmp_port as u16,
+                    5, // 5 seconds timeout
+                )
+            })
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+
+            let monitored = tags.get("monitored_interfaces").cloned().unwrap_or(serde_json::Value::Array(vec![]));
+            let monitored_mib = tags.get("monitored_mib_metrics").cloned().unwrap_or(serde_json::Value::Array(vec![]));
+
+            Ok(serde_json::json!({
+                "interfaces": interfaces,
+                "monitored": monitored,
+                "mib_name": serde_json::Value::Null,
+                "mib_tables": [],
+                "monitored_mib_metrics": monitored_mib,
+            }))
+        }
+
         ("POST", ["devices", id_str, "interfaces"]) if id_str.parse::<i32>().is_ok() => {
             let id = id_str.parse::<i32>().unwrap();
             let indexes = data.get("indexes").ok_or("indexes field is required")?;

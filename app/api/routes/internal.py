@@ -88,6 +88,36 @@ async def device_polled(payload: Dict[str, Any], db: AsyncSession = Depends(get_
 
     return {"status": "ok"}
 
+@router.post("/list-interfaces", dependencies=[Depends(verify_token)])
+async def list_interfaces(payload: Dict[str, Any]):
+    """Run a live SNMP walk to list device interfaces.
+
+    Called by the Rust desktop backend, which reads SNMP config from its
+    local SQLite and forwards connection params here.  No database or user
+    auth dependency — the secret-token gate is sufficient.
+
+    Expected payload keys:
+        ip_address, community, version, port (optional, default 161)
+    """
+    from core.snmp_engine import list_device_interfaces
+
+    ip = payload.get("ip_address")
+    if not ip:
+        raise HTTPException(400, "ip_address is required")
+
+    community = payload.get("community", "public")
+    version = payload.get("version", "v2c")
+    port = int(payload.get("port", 161))
+
+    try:
+        interfaces = await list_device_interfaces(ip, community, version, port)
+    except Exception as exc:
+        logger.error("SNMP interface walk failed for %s: %s", ip, exc)
+        raise HTTPException(503, f"SNMP query failed: {exc}")
+
+    return {"interfaces": interfaces}
+
+
 @router.post("/trap-received", dependencies=[Depends(verify_token)])
 async def trap_received(payload: Dict[str, Any], db: AsyncSession = Depends(get_db)):
     # Forward directly to the existing trap alert handler
