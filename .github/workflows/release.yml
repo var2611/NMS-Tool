@@ -65,9 +65,9 @@ jobs:
           BUMP="${{ github.event.inputs.bump }}"
 
           if [[ -n "$EXACT" ]]; then
-            # Validate format: must be X.Y.Z
-            if ! [[ "$EXACT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              echo "ERROR: exact_version must be in X.Y.Z format (got: $EXACT)"
+            # Validate format: must be X.Y.Z[-suffix]
+            if ! [[ "$EXACT" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+              echo "ERROR: exact_version must be in X.Y.Z[-suffix] format (got: $EXACT)"
               exit 1
             fi
             NEW="$EXACT"
