@@ -147,7 +147,7 @@ jobs:
         run: |
           git tag -a "${{ steps.ver.outputs.tag }}" \
             -m "Release ${{ steps.ver.outputs.tag }}"
-          git push origin master --follow-tags
+          git push origin HEAD --follow-tags
 
       - name: Summary
         run: |
