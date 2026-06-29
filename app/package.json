@@ -1,7 +1,7 @@
 {
   "name": "sentinelnms-desktop",
-  "version": "3.0.0",
-  "description": "SentinelNMS — Network Management System by Nav Wireless Technologies",
+  "version": "3.0.1-beta",
+  "description": "SentinelNMS \u2014 Network Management System by Nav Wireless Technologies",
   "author": {
     "name": "Vardhan Suthar",
     "email": "var2611@gmail.com"
