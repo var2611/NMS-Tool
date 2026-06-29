@@ -164,15 +164,21 @@ jobs:
         include:
           - os: macos-14
             platform: mac-arm64
-            build_cmd: npx electron-builder --mac --arm64 --publish always
+            target: aarch64-apple-darwin
+            sidecar_suffix: aarch64-apple-darwin
+            ext: ""
 
           - os: ubuntu-22.04
             platform: linux
-            build_cmd: npx electron-builder --linux --x64 --publish always
+            target: aarch64-unknown-linux-gnu
+            sidecar_suffix: aarch64-unknown-linux-gnu
+            ext: ""
 
           - os: windows-latest
             platform: windows
-            build_cmd: npx electron-builder --win --x64 --publish always
+            target: x86_64-pc-windows-msvc
+            sidecar_suffix: x86_64-pc-windows-msvc.exe
+            ext: .exe
 
     runs-on: ${{ matrix.os }}
     name: Build (${{ matrix.platform }})
@@ -193,14 +199,17 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.target }}
+
       - name: Install Linux build dependencies
         if: matrix.platform == 'linux'
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            fakeroot rpm libarchive-tools \
-            libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
-            libatspi2.0-0 libdrm2 libgbm1 libasound2
+          sudo apt-get update -y
+          sudo apt-get install -y curl build-essential python3 python3-pip python3-venv git \
+            libsoup-3.0-dev libwebkit2gtk-4.1-dev libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
 
       # Frontend must be built BEFORE PyInstaller (PyInstaller bundles frontend/dist)
       - name: Build React frontend
@@ -219,86 +228,35 @@ jobs:
         shell: bash
         working-directory: app
         run: |
-          if [[ "${{ runner.os }}" == "Windows" ]]; then SEP=";"; else SEP=":"; fi
+          python3 -m PyInstaller nms-backend.spec --distpath dist-backend --workpath build-pyinstaller --noconfirm
 
-          python3 -m PyInstaller \
-            --onedir \
-            --name nms-backend \
-            --distpath dist-backend \
-            --workpath build-pyinstaller \
-            --noconfirm \
-            --add-data "api${SEP}api" \
-            --add-data "core${SEP}core" \
-            --add-data "frontend/dist${SEP}frontend/dist" \
-            --collect-all "uvicorn" \
-            --collect-all "fastapi" \
-            --collect-all "starlette" \
-            --collect-all "pydantic" \
-            --collect-all "pydantic_settings" \
-            --collect-all "pydantic_core" \
-            --collect-all "sqlalchemy" \
-            --collect-all "aiosqlite" \
-            --collect-all "asyncpg" \
-            --collect-all "alembic" \
-            --collect-all "pysnmp" \
-            --collect-all "pyasn1" \
-            --collect-all "bcrypt" \
-            --collect-all "jose" \
-            --collect-all "cryptography" \
-            --collect-all "aiofiles" \
-            --collect-all "apscheduler" \
-            --collect-all "psutil" \
-            --collect-all "netaddr" \
-            --collect-all "httpx" \
-            --collect-all "python_multipart" \
-            --collect-all "dotenv" \
-            --collect-all "anyio" \
-            --collect-all "sniffio" \
-            --collect-all "h11" \
-            --collect-all "websockets" \
-            --collect-all "wsproto" \
-            --hidden-import "email.mime.text" \
-            --hidden-import "email.mime.multipart" \
-            --hidden-import "email.mime.base" \
-            --hidden-import "email.utils" \
-            --hidden-import "smtplib" \
-            --hidden-import "ssl" \
-            --hidden-import "ipaddress" \
-            --hidden-import "uvicorn.logging" \
-            --hidden-import "uvicorn.loops.auto" \
-            --hidden-import "uvicorn.loops.asyncio" \
-            --hidden-import "uvicorn.protocols.http.auto" \
-            --hidden-import "uvicorn.protocols.http.h11_impl" \
-            --hidden-import "uvicorn.protocols.websockets.auto" \
-            --hidden-import "uvicorn.protocols.websockets.websockets_impl" \
-            --hidden-import "uvicorn.lifespan.on" \
-            --hidden-import "uvicorn.lifespan.off" \
-            --hidden-import "sqlalchemy.sql.default_comparator" \
-            --hidden-import "sqlalchemy.dialects.sqlite" \
-            --hidden-import "sqlalchemy.dialects.sqlite.aiosqlite" \
-            backend_entry.py 2>&1 | tail -5
+      - name: Rename & place sidecar binary
+        shell: bash
+        run: |
+          mkdir -p app/src-tauri/binaries
+          cp app/dist-backend/nms-backend${{ matrix.ext }} app/src-tauri/binaries/nms-backend-${{ matrix.sidecar_suffix }}
 
-          echo "=== PyInstaller output ===" && ls -lh dist-backend/nms-backend/ | head -6
-
-      - name: Install Electron + electron-updater
+      - name: Install App Dependencies
         working-directory: app
         run: npm install
 
-      # electron-builder --publish always:
-      #   • Builds the installer
-      #   • Creates/updates the GitHub Release for this tag
-      #   • Uploads the installer + latest.yml metadata to the release
-      # CSC_IDENTITY_AUTO_DISCOVERY=false skips macOS code-signing in CI.
-      # Add CSC_LINK + CSC_KEY_PASSWORD secrets to enable proper signing.
-      - name: Build and publish installer
+      - name: Build Tauri Desktop App
         working-directory: app
-        run: ${{ matrix.build_cmd }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npx tauri build --target ${{ matrix.target }}
 
-      - name: List output files
-        shell: bash
-        working-directory: app
-        run: ls -lh dist-electron/
+      - name: Publish Release Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.bump-and-tag.outputs.tag }}
+          files: |
+            app/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
+            app/src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
+            app/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            app/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
+            app/src-tauri/target/release/bundle/msi/*.msi
+            app/src-tauri/target/release/bundle/nsis/*.exe
+            app/src-tauri/target/release/bundle/dmg/*.dmg
+            app/src-tauri/target/release/bundle/deb/*.deb
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
