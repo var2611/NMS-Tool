@@ -27,17 +27,15 @@ jobs:
         shell: cmd
         run: |
           set "PYTHON_PATH="
-          if exist "C:\Python311\python.exe" set "PYTHON_PATH=C:\Python311"
-          if exist "C:\Python312\python.exe" set "PYTHON_PATH=C:\Python312"
-          if exist "C:\Python310\python.exe" set "PYTHON_PATH=C:\Python310"
-          if exist "C:\Program Files\Python311\python.exe" set "PYTHON_PATH=C:\Program Files\Python311"
-          if exist "C:\Program Files\Python312\python.exe" set "PYTHON_PATH=C:\Program Files\Python312"
-          if exist "%USERPROFILE%\AppData\Local\Programs\Python\Python311\python.exe" set "PYTHON_PATH=%USERPROFILE%\AppData\Local\Programs\Python\Python311"
-          if exist "%USERPROFILE%\AppData\Local\Programs\Python\Python312\python.exe" set "PYTHON_PATH=%USERPROFILE%\AppData\Local\Programs\Python\Python312"
-          if exist "%USERPROFILE%\AppData\Local\Programs\Python\Python310\python.exe" set "PYTHON_PATH=%USERPROFILE%\AppData\Local\Programs\Python\Python310"
-          if exist "%LocalAppData%\Programs\Python\Python311\python.exe" set "PYTHON_PATH=%LocalAppData%\Programs\Python\Python311"
-          if exist "%LocalAppData%\Programs\Python\Python312\python.exe" set "PYTHON_PATH=%LocalAppData%\Programs\Python\Python312"
-          if exist "%LocalAppData%\Programs\Python\Python310\python.exe" set "PYTHON_PATH=%LocalAppData%\Programs\Python\Python310"
+          for %%v in (313 312 311 310 39 38 37) do (
+              if exist "C:\Python%%v\python.exe" set "PYTHON_PATH=C:\Python%%v"
+              if exist "C:\Program Files\Python%%v\python.exe" set "PYTHON_PATH=C:\Program Files\Python%%v"
+              if exist "C:\Program Files (x86)\Python%%v\python.exe" set "PYTHON_PATH=C:\Program Files (x86)\Python%%v"
+              if exist "%USERPROFILE%\AppData\Local\Programs\Python\Python%%v\python.exe" set "PYTHON_PATH=%USERPROFILE%\AppData\Local\Programs\Python\Python%%v"
+              if exist "%USERPROFILE%\AppData\Local\Programs\Python\Python%%v-64\python.exe" set "PYTHON_PATH=%USERPROFILE%\AppData\Local\Programs\Python\Python%%v-64"
+              if exist "%LocalAppData%\Programs\Python\Python%%v\python.exe" set "PYTHON_PATH=%LocalAppData%\Programs\Python\Python%%v"
+              if exist "%LocalAppData%\Programs\Python\Python%%v-64\python.exe" set "PYTHON_PATH=%LocalAppData%\Programs\Python\Python%%v-64"
+          )
           if not "%PYTHON_PATH%"=="" (
               echo Found Python in %PYTHON_PATH%
               echo %PYTHON_PATH%>> %GITHUB_PATH%
