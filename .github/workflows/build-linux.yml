@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - development
+    paths:
+      - '.github/workflows/build-linux.yml'
+      - 'app/**'
   workflow_dispatch:
 
 permissions:
