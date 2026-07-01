@@ -20,10 +20,28 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+      - name: Locate and Setup Python
+        shell: cmd
+        run: |
+          set "PYTHON_PATH="
+          if exist "C:\Python311\python.exe" set "PYTHON_PATH=C:\Python311"
+          if exist "C:\Python312\python.exe" set "PYTHON_PATH=C:\Python312"
+          if exist "C:\Python310\python.exe" set "PYTHON_PATH=C:\Python310"
+          if exist "C:\Program Files\Python311\python.exe" set "PYTHON_PATH=C:\Program Files\Python311"
+          if exist "C:\Program Files\Python312\python.exe" set "PYTHON_PATH=C:\Program Files\Python312"
+          if exist "%USERPROFILE%\AppData\Local\Programs\Python\Python311\python.exe" set "PYTHON_PATH=%USERPROFILE%\AppData\Local\Programs\Python\Python311"
+          if exist "%USERPROFILE%\AppData\Local\Programs\Python\Python312\python.exe" set "PYTHON_PATH=%USERPROFILE%\AppData\Local\Programs\Python\Python312"
+          if exist "%USERPROFILE%\AppData\Local\Programs\Python\Python310\python.exe" set "PYTHON_PATH=%USERPROFILE%\AppData\Local\Programs\Python\Python310"
+          if exist "%LocalAppData%\Programs\Python\Python311\python.exe" set "PYTHON_PATH=%LocalAppData%\Programs\Python\Python311"
+          if exist "%LocalAppData%\Programs\Python\Python312\python.exe" set "PYTHON_PATH=%LocalAppData%\Programs\Python\Python312"
+          if exist "%LocalAppData%\Programs\Python\Python310\python.exe" set "PYTHON_PATH=%LocalAppData%\Programs\Python\Python310"
+          if not "%PYTHON_PATH%"=="" (
+              echo Found Python in %PYTHON_PATH%
+              echo %PYTHON_PATH%>> %GITHUB_PATH%
+              echo %PYTHON_PATH%\Scripts>> %GITHUB_PATH%
+          ) else (
+              echo Python not found in standard paths. If it is already in your system PATH, GHA will use it.
+          )
 
       - name: Install Python dependencies & PyInstaller
         shell: cmd
