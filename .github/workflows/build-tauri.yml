@@ -69,39 +69,41 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Install Python dependencies & PyInstaller
-        shell: bash
+        shell: powershell
         run: |
           python -m venv venv
-          ./venv/Scripts/pip install --upgrade pip
-          ./venv/Scripts/pip install -r app/requirements.txt pyinstaller
+          .\venv\Scripts\pip install --upgrade pip
+          .\venv\Scripts\pip install -r app/requirements.txt pyinstaller
 
       - name: Build standalone Python backend (PyInstaller)
-        shell: bash
+        shell: powershell
         working-directory: app
         run: |
-          ../venv/Scripts/pyinstaller nms-backend.spec --distpath dist-backend --workpath build-pyinstaller --noconfirm
+          ..\venv\Scripts\pyinstaller nms-backend.spec --distpath dist-backend --workpath build-pyinstaller --noconfirm
 
       - name: Rename & place sidecar binary
-        shell: bash
+        shell: powershell
         run: |
-          mkdir -p app/src-tauri/binaries
-          cp app/dist-backend/nms-backend.exe app/src-tauri/binaries/nms-backend-x86_64-pc-windows-msvc.exe
+          if (-not (Test-Path app/src-tauri/binaries)) {
+              New-Item -ItemType Directory -Force -Path app/src-tauri/binaries
+          }
+          Copy-Item app/dist-backend/nms-backend.exe app/src-tauri/binaries/nms-backend-x86_64-pc-windows-msvc.exe -Force
 
       - name: Build frontend
-        shell: bash
+        shell: powershell
         working-directory: app/frontend
         run: |
           npm install
           npm run build
 
       - name: Install Tauri CLI & dependencies
-        shell: bash
+        shell: powershell
         working-directory: app
         run: |
           npm install
 
       - name: Build Tauri Desktop App
-        shell: bash
+        shell: powershell
         working-directory: app
         run: |
           npx tauri build --target x86_64-pc-windows-msvc
