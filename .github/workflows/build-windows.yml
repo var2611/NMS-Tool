@@ -39,54 +39,21 @@ jobs:
       - name: Locate and Setup Rust (Cargo)
         shell: powershell
         run: |
-          $cargoExe = $null
-
-          # 1. Check if cargo is in PATH
-          $cargoCmd = Get-Command cargo -ErrorAction SilentlyContinue
-          if ($cargoCmd) {
-              $cargoExe = $cargoCmd.Source
-              Write-Host "Found Cargo in PATH: $cargoExe"
-          }
-
-          # 2. Check User profile folders using loop
-          if (-not $cargoExe) {
-              $usersDir = "C:\Users"
-              if (Test-Path $usersDir) {
-                  $subDirs = Get-ChildItem -Path $usersDir -Directory -ErrorAction SilentlyContinue
-                  foreach ($uDir in $subDirs) {
-                      $cPath = Join-Path $uDir.FullName ".cargo\bin\cargo.exe"
-                      if (Test-Path $cPath -ErrorAction SilentlyContinue) {
-                          $cargoExe = $cPath
-                          Write-Host "Found Cargo in User Profile ($($uDir.Name)): $cargoExe"
-                          break
-                      }
-                  }
-              }
-          }
-
-          # 3. Check common system paths
-          if (-not $cargoExe) {
-              $commonPaths = @(
-                  "C:\Program Files\Rust\bin\cargo.exe",
-                  "C:\Program Files (x86)\Rust\bin\cargo.exe",
-                  "C:\rust\bin\cargo.exe"
-              )
-              foreach ($p in $commonPaths) {
-                  if (Test-Path $p) {
-                      $cargoExe = $p
-                      Write-Host "Found Cargo in common path: $cargoExe"
-                      break
-                  }
-              }
-          }
-
-          if ($cargoExe) {
-              $cargoDir = Split-Path -Path $cargoExe -Parent
+          $cargoDir = "C:\Users\Admin\.cargo\bin"
+          if (Test-Path (Join-Path $cargoDir "cargo.exe")) {
+              Write-Host "Using static Cargo path: $cargoDir"
               $cargoDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-              Write-Host "Added Cargo to GHA PATH: $cargoDir"
           } else {
-              Write-Error "Rust/Cargo not found on the system! Please ensure Rust is installed."
-              exit 1
+              # Fallback: check if cargo is in PATH
+              $cargoCmd = Get-Command cargo -ErrorAction SilentlyContinue
+              if ($cargoCmd) {
+                  $cargoDir = Split-Path -Path $cargoCmd.Source -Parent
+                  Write-Host "Found Cargo in PATH: $cargoDir"
+                  $cargoDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+              } else {
+                  Write-Error "Cargo not found at static path: $cargoDir or in PATH."
+                  exit 1
+              }
           }
 
       - name: Install Python dependencies & PyInstaller
