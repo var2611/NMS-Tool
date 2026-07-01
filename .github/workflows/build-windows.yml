@@ -26,23 +26,101 @@ jobs:
       - name: Locate and Setup Python
         shell: cmd
         run: |
-          set "PYTHON_PATH="
+          set "PYTHON_EXE="
+          
+          :: 1. Check if 'where python' yields a real Python (ignoring Microsoft Store dummy)
+          where python >nul 2>&1
+          if %errorlevel% equ 0 (
+              for /f "delims=" %%i in ('where python') do (
+                  echo %%i | findstr /i "WindowsApps" >nul
+                  if errorlevel 1 (
+                      set "PYTHON_EXE=%%i"
+                      goto :found
+                  )
+              )
+          )
+          
+          :: 2. Check if 'where py' yields a Python Launcher
+          where py >nul 2>&1
+          if %errorlevel% equ 0 (
+              for /f "delims=" %%i in ('where py') do (
+                  set "PYTHON_EXE=%%i"
+                  goto :found
+              )
+          )
+
+          :: 3. Check registry for User Installation
+          for /f "tokens=2*" %%a in ('reg query "HKCU\Software\Python\PythonCore" /s /v InstallPath 2^>nul ^| findstr REG_SZ') do (
+              if exist "%%b\python.exe" (
+                  set "PYTHON_EXE=%%b\python.exe"
+                  goto :found
+              )
+          )
+
+          :: 4. Check registry for System Installation
+          for /f "tokens=2*" %%a in ('reg query "HKLM\Software\Python\PythonCore" /s /v InstallPath 2^>nul ^| findstr REG_SZ') do (
+              if exist "%%b\python.exe" (
+                  set "PYTHON_EXE=%%b\python.exe"
+                  goto :found
+              )
+          )
+
+          :: 5. Check common paths (Chocolatey, Scoop, and standard paths)
+          if exist "C:\tools\python\python.exe" (
+              set "PYTHON_EXE=C:\tools\python\python.exe"
+              goto :found
+          )
+          if exist "C:\tools\python3\python.exe" (
+              set "PYTHON_EXE=C:\tools\python3\python.exe"
+              goto :found
+          )
+          if exist "%USERPROFILE%\scoop\apps\python\current\python.exe" (
+              set "PYTHON_EXE=%USERPROFILE%\scoop\apps\python\current\python.exe"
+              goto :found
+          )
+          
           for %%v in (313 312 311 310 39 38 37) do (
-              if exist "C:\Python%%v\python.exe" set "PYTHON_PATH=C:\Python%%v"
-              if exist "C:\Program Files\Python%%v\python.exe" set "PYTHON_PATH=C:\Program Files\Python%%v"
-              if exist "C:\Program Files (x86)\Python%%v\python.exe" set "PYTHON_PATH=C:\Program Files (x86)\Python%%v"
-              if exist "%USERPROFILE%\AppData\Local\Programs\Python\Python%%v\python.exe" set "PYTHON_PATH=%USERPROFILE%\AppData\Local\Programs\Python\Python%%v"
-              if exist "%USERPROFILE%\AppData\Local\Programs\Python\Python%%v-64\python.exe" set "PYTHON_PATH=%USERPROFILE%\AppData\Local\Programs\Python\Python%%v-64"
-              if exist "%LocalAppData%\Programs\Python\Python%%v\python.exe" set "PYTHON_PATH=%LocalAppData%\Programs\Python\Python%%v"
-              if exist "%LocalAppData%\Programs\Python\Python%%v-64\python.exe" set "PYTHON_PATH=%LocalAppData%\Programs\Python\Python%%v-64"
+              if exist "C:\Python%%v\python.exe" (
+                  set "PYTHON_EXE=C:\Python%%v\python.exe"
+                  goto :found
+              )
+              if exist "C:\Program Files\Python%%v\python.exe" (
+                  set "PYTHON_EXE=C:\Program Files\Python%%v\python.exe"
+                  goto :found
+              )
+              if exist "C:\Program Files (x86)\Python%%v\python.exe" (
+                  set "PYTHON_EXE=C:\Program Files (x86)\Python%%v\python.exe"
+                  goto :found
+              )
+              if exist "%USERPROFILE%\AppData\Local\Programs\Python\Python%%v\python.exe" (
+                  set "PYTHON_EXE=%USERPROFILE%\AppData\Local\Programs\Python\Python%%v\python.exe"
+                  goto :found
+              )
+              if exist "%USERPROFILE%\AppData\Local\Programs\Python\Python%%v-64\python.exe" (
+                  set "PYTHON_EXE=%USERPROFILE%\AppData\Local\Programs\Python\Python%%v-64\python.exe"
+                  goto :found
+              )
+              if exist "%LocalAppData%\Programs\Python\Python%%v\python.exe" (
+                  set "PYTHON_EXE=%LocalAppData%\Programs\Python\Python%%v\python.exe"
+                  goto :found
+              )
+              if exist "%LocalAppData%\Programs\Python\Python%%v-64\python.exe" (
+                  set "PYTHON_EXE=%LocalAppData%\Programs\Python\Python%%v-64\python.exe"
+                  goto :found
+              )
           )
-          if not "%PYTHON_PATH%"=="" (
-              echo Found Python in %PYTHON_PATH%
-              echo %PYTHON_PATH%>> %GITHUB_PATH%
-              echo %PYTHON_PATH%\Scripts>> %GITHUB_PATH%
-          ) else (
-              echo Python not found in standard paths. If it is already in your system PATH, GHA will use it.
-          )
+
+          echo Python not found on the system!
+          exit /b 1
+
+          :found
+          echo Found Python executable at: %PYTHON_EXE%
+          for %%i in ("%PYTHON_EXE%") do set "PYTHON_DIR=%%~dpi"
+          if "%PYTHON_DIR:~-1%"=="\" set "PYTHON_DIR=%PYTHON_DIR:~0,-1%"
+          
+          echo %PYTHON_DIR%>> %GITHUB_PATH%
+          echo %PYTHON_DIR%\Scripts>> %GITHUB_PATH%
+          echo Added to PATH: %PYTHON_DIR%
 
       - name: Install Python dependencies & PyInstaller
         shell: cmd
