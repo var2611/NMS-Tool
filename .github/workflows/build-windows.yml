@@ -38,33 +38,34 @@ jobs:
               }
           }
 
-          # 2. Check User profile folders using wildcards (handles service account context)
+          # 2. Check User profile folders using loop (handles service account context where wildcards fail)
           if (-not $pythonExe) {
-              $searchPatterns = @(
-                  "C:\Users\*\AppData\Local\Programs\Python\Python*\python.exe",
-                  "C:\Users\*\AppData\Local\Python\bin\python.exe",
-                  "C:\Users\*\AppData\Local\Programs\Python\Python*-64\python.exe"
-              )
-              foreach ($pattern in $searchPatterns) {
-                  $foundFiles = Get-Item -Path $pattern -ErrorAction SilentlyContinue
-                  if ($foundFiles) {
-                      $pythonExe = $foundFiles[0].FullName
-                      Write-Host "Found in User Profiles: $pythonExe"
-                      break
+              $usersDir = "C:\Users"
+              if (Test-Path $usersDir) {
+                  $subDirs = Get-ChildItem -Path $usersDir -Directory -ErrorAction SilentlyContinue
+                  foreach ($uDir in $subDirs) {
+                      $versions = @("315", "314", "313", "312", "311", "310", "39", "38", "37")
+                      foreach ($v in $versions) {
+                          $candidatePaths = @(
+                              (Join-Path $uDir.FullName "AppData\Local\Programs\Python\Python$v\python.exe"),
+                              (Join-Path $uDir.FullName "AppData\Local\Programs\Python\Python$v-64\python.exe"),
+                              (Join-Path $uDir.FullName "AppData\Local\Python\bin\python.exe")
+                          )
+                          foreach ($c in $candidatePaths) {
+                              if (Test-Path $c -ErrorAction SilentlyContinue) {
+                                  $pythonExe = $c
+                                  Write-Host "Found in User Profile ($($uDir.Name)): $pythonExe"
+                                  break
+                              }
+                          }
+                          if ($pythonExe) { break }
+                      }
+                      if ($pythonExe) { break }
                   }
               }
           }
 
-          # 3. Check if 'py' launcher is available
-          if (-not $pythonExe) {
-              $pyCmd = Get-Command py -ErrorAction SilentlyContinue
-              if ($pyCmd) {
-                  $pythonExe = $pyCmd.Source
-                  Write-Host "Found via py launcher: $pythonExe"
-              }
-          }
-
-          # 4. Check registry (HKCU and HKLM)
+          # 3. Check registry (HKCU and HKLM)
           if (-not $pythonExe) {
               $regPaths = @(
                   "HKCU:\Software\Python\PythonCore",
@@ -88,7 +89,7 @@ jobs:
               }
           }
 
-          # 5. Check common folders (Chocolatey, Scoop)
+          # 4. Check common folders (Chocolatey, Scoop)
           if (-not $pythonExe) {
               $commonDirs = @(
                   "C:\tools\python\python.exe",
@@ -104,7 +105,7 @@ jobs:
               }
           }
 
-          # 6. Check standard install paths (versions 3.7 to 3.15)
+          # 5. Check standard install paths (versions 3.7 to 3.15)
           if (-not $pythonExe) {
               $versions = @("315", "314", "313", "312", "311", "310", "39", "38", "37")
               $searchRoots = @(
@@ -130,6 +131,15 @@ jobs:
                       if ($pythonExe) { break }
                   }
                   if ($pythonExe) { break }
+              }
+          }
+
+          # 6. Check if 'py' launcher is available (as last resort, since it might not have underlying bindings)
+          if (-not $pythonExe) {
+              $pyCmd = Get-Command py -ErrorAction SilentlyContinue
+              if ($pyCmd) {
+                  $pythonExe = $pyCmd.Source
+                  Write-Host "Found via py launcher: $pythonExe"
               }
           }
 
