@@ -14,8 +14,8 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  RUSTUP_HOME: 'C:\Users\Admin\.rustup'
-  CARGO_HOME: 'C:\Users\Admin\.cargo'
+  RUSTUP_HOME: 'C:\zzz\rustup'
+  CARGO_HOME: 'C:\zzz\cargo'
 
 jobs:
   build-windows:
