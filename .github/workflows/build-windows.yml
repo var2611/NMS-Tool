@@ -28,22 +28,20 @@ jobs:
         run: |
           $pythonExe = $null
 
-          # 1. Check if 'where python' yields a real Python (ignoring Windows Store dummy)
-          $paths = where.exe python 2>$null
-          if ($paths) {
-              foreach ($p in $paths) {
-                  if ($p -notlike "*WindowsApps*") {
-                      $pythonExe = $p
-                      break
-                  }
+          # 1. Check if python is in PATH (and is not Microsoft Store dummy)
+          $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+          if ($pythonCmd) {
+              $p = $pythonCmd.Source
+              if ($p -notlike "*WindowsApps*") {
+                  $pythonExe = $p
               }
           }
 
           # 2. Check if 'py' launcher is available
           if (-not $pythonExe) {
-              $pyPath = where.exe py 2>$null
-              if ($pyPath) {
-                  $pythonExe = $pyPath[0]
+              $pyCmd = Get-Command py -ErrorAction SilentlyContinue
+              if ($pyCmd) {
+                  $pythonExe = $pyCmd.Source
               }
           }
 
