@@ -58,6 +58,9 @@ jobs:
               }
           }
 
+      - name: Set up MSVC Developer Command Prompt
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Install Python dependencies & PyInstaller
         shell: powershell
         run: |
