@@ -59,6 +59,7 @@ jobs:
       - name: Install Python dependencies & PyInstaller
         shell: powershell
         run: |
+          $ErrorActionPreference = 'Continue'
           python -m venv venv
           .\venv\Scripts\python.exe -m pip install --upgrade pip
           .\venv\Scripts\pip.exe install -r app/requirements.txt pyinstaller
@@ -67,6 +68,7 @@ jobs:
         shell: powershell
         working-directory: app
         run: |
+          $ErrorActionPreference = 'Continue'
           ..\venv\Scripts\pyinstaller.exe nms-backend.spec --distpath dist-backend --workpath build-pyinstaller --noconfirm
 
       - name: Rename & place sidecar binary
@@ -81,6 +83,7 @@ jobs:
         shell: powershell
         working-directory: app/frontend
         run: |
+          $ErrorActionPreference = 'Continue'
           npm install
           npm run build
 
@@ -88,12 +91,14 @@ jobs:
         shell: powershell
         working-directory: app
         run: |
+          $ErrorActionPreference = 'Continue'
           npm install
 
       - name: Build Tauri Desktop App
         shell: powershell
         working-directory: app
         run: |
+          $ErrorActionPreference = 'Continue'
           npx tauri build --target x86_64-pc-windows-msvc
 
       - name: Upload Windows Executables
