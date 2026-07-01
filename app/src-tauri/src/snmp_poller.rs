@@ -109,6 +109,7 @@ pub struct Device {
     pub poll_interval: Option<i32>,
     pub consecutive_failures: Option<i32>,
     pub tags: Option<serde_json::Value>,
+    pub last_polled: Option<chrono::NaiveDateTime>,
 }
 
 pub fn get_opt_int_column(row: &sqlx::sqlite::SqliteRow, col: &str) -> Option<i32> {
@@ -131,7 +132,7 @@ pub async fn start_poller(
         if let Err(e) = run_poll_cycle(&pool, api_port, &secret_token, &cache, &app).await {
             log::error!("Poll cycle error: {}", e);
         }
-        sleep(Duration::from_secs(10)).await;
+        sleep(Duration::from_secs(1)).await;
     }
 }
 
@@ -144,7 +145,7 @@ async fn run_poll_cycle(
 ) -> Result<(), sqlx::Error> {
     // 1. Fetch active devices owned locally
     let device_rows = sqlx::query(
-        "SELECT id, ip_address, name, snmp_community, snmp_version, snmp_port, device_type, poll_interval, consecutive_failures, tags FROM devices WHERE is_active = 1 AND (source != 'desktop_sync' OR source IS NULL)"
+        "SELECT id, ip_address, name, snmp_community, snmp_version, snmp_port, device_type, poll_interval, consecutive_failures, tags, last_polled FROM devices WHERE is_active = 1 AND (source != 'desktop_sync' OR source IS NULL)"
     )
     .fetch_all(pool)
     .await?;
@@ -164,6 +165,7 @@ async fn run_poll_cycle(
         let consecutive_failures = get_opt_int_column(&row, "consecutive_failures");
         let tags_str = row.try_get::<Option<String>, _>("tags").unwrap_or(None);
         let tags = tags_str.and_then(|s| serde_json::from_str(&s).ok());
+        let last_polled = row.try_get::<Option<chrono::NaiveDateTime>, _>("last_polled").unwrap_or(None);
 
         devices.push(Device {
             id,
@@ -176,6 +178,7 @@ async fn run_poll_cycle(
             poll_interval,
             consecutive_failures,
             tags,
+            last_polled,
         });
     }
 
@@ -187,15 +190,35 @@ async fn run_poll_cycle(
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(5); // fallback to 5 seconds
 
-    for dev in devices {
-        let pool_clone = pool.clone();
-        let cache_clone = cache.clone();
-        let token = secret_token.to_string();
-        let app_clone = app.clone();
+    let poll_interval_setting = sqlx::query("SELECT value FROM system_settings WHERE key = 'poll_interval'")
+        .fetch_optional(pool)
+        .await?
+        .and_then(|row| row.try_get::<Option<String>, _>("value").unwrap_or(None))
+        .and_then(|v| v.parse::<i32>().ok())
+        .unwrap_or(5); // fallback to 5 seconds
 
-        tokio::spawn(async move {
-            poll_device_single(pool_clone, dev.id, cache_clone, token, api_port, snmp_timeout_setting, Some(app_clone)).await;
-        });
+    let now = chrono::Utc::now().naive_utc();
+
+    for dev in devices {
+        let interval = dev.poll_interval.unwrap_or(poll_interval_setting);
+        let mut should_poll = true;
+        if let Some(last) = dev.last_polled {
+            let elapsed = now.signed_duration_since(last).num_seconds();
+            if elapsed < interval as i64 {
+                should_poll = false;
+            }
+        }
+
+        if should_poll {
+            let pool_clone = pool.clone();
+            let cache_clone = cache.clone();
+            let token = secret_token.to_string();
+            let app_clone = app.clone();
+
+            tokio::spawn(async move {
+                poll_device_single(pool_clone, dev.id, cache_clone, token, api_port, snmp_timeout_setting, Some(app_clone)).await;
+            });
+        }
     }
 
     Ok(())
@@ -524,10 +547,19 @@ async fn ping_latency(ip: &str, timeout_secs: f64) -> Option<f64> {
         vec!["-c", "1", "-W", &timeout_ceil_str, ip]
     };
 
-    let output = tokio::process::Command::new("ping")
+    let mut cmd_builder = tokio::process::Command::new("ping");
+    cmd_builder
         .args(&cmd)
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd_builder.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
+    let output = cmd_builder
         .spawn()
         .ok()?
         .wait_with_output()

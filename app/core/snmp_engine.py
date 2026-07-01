@@ -211,10 +211,16 @@ async def ping_host(ip: str, timeout: float = 1.0) -> bool:
         # -c 1 = one ping, -W = timeout in seconds
         cmd = ["ping", "-c", "1", "-W", str(int(timeout)), ip]
     try:
+        kwargs = {}
+        if system == "windows":
+            import subprocess
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL
+            stderr=asyncio.subprocess.DEVNULL,
+            **kwargs
         )
         await asyncio.wait_for(proc.communicate(), timeout=timeout + 2)
         return proc.returncode == 0
@@ -479,10 +485,16 @@ async def ping_latency(ip: str, timeout: float = 2.0) -> Optional[float]:
     else:
         cmd = ["ping", "-c", "1", "-W", str(int(max(1, timeout))), ip]
     try:
+        kwargs = {}
+        if system == "windows":
+            import subprocess
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            **kwargs
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout + 2)
         if proc.returncode == 0:

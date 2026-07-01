@@ -1,4 +1,4 @@
-name: Build Linux Self-Hosted
+name: Build Desktop Apps (Self-Hosted)
 
 on:
   push:
@@ -14,7 +14,7 @@ env:
 
 jobs:
   build-linux:
-    runs-on: self-hosted
+    runs-on: [self-hosted, linux]
     name: Build Linux (ARM64 Native)
     steps:
       - name: Checkout repository
@@ -59,4 +59,60 @@ jobs:
           path: |
             app/src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/deb/*.deb
             app/src-tauri/target/release/bundle/deb/*.deb
+          if-no-files-found: warn
+
+  build-windows:
+    runs-on: [self-hosted, windows]
+    name: Build Windows (x86_64 Native)
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Python dependencies & PyInstaller
+        shell: bash
+        run: |
+          python -m venv venv
+          ./venv/Scripts/pip install --upgrade pip
+          ./venv/Scripts/pip install -r app/requirements.txt pyinstaller
+
+      - name: Build standalone Python backend (PyInstaller)
+        shell: bash
+        working-directory: app
+        run: |
+          ../venv/Scripts/pyinstaller nms-backend.spec --distpath dist-backend --workpath build-pyinstaller --noconfirm
+
+      - name: Rename & place sidecar binary
+        shell: bash
+        run: |
+          mkdir -p app/src-tauri/binaries
+          cp app/dist-backend/nms-backend.exe app/src-tauri/binaries/nms-backend-x86_64-pc-windows-msvc.exe
+
+      - name: Build frontend
+        shell: bash
+        working-directory: app/frontend
+        run: |
+          npm install
+          npm run build
+
+      - name: Install Tauri CLI & dependencies
+        shell: bash
+        working-directory: app
+        run: |
+          npm install
+
+      - name: Build Tauri Desktop App
+        shell: bash
+        working-directory: app
+        run: |
+          npx tauri build --target x86_64-pc-windows-msvc
+
+      - name: Upload Windows Executables
+        uses: actions/upload-artifact@v4
+        with:
+          name: sentinelnms-windows-build
+          path: |
+            app/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            app/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+            app/src-tauri/target/release/bundle/nsis/*.exe
+            app/src-tauri/target/release/bundle/msi/*.msi
           if-no-files-found: warn

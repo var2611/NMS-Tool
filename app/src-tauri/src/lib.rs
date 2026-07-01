@@ -1424,7 +1424,9 @@ pub fn run() {
             let db_url = format!("sqlite://{}?mode=rwc", db_path);
             let connect_options = sqlx::sqlite::SqliteConnectOptions::from_str(&db_url)
                 .expect("Failed to parse SQLite connection URL")
-                .busy_timeout(std::time::Duration::from_millis(5000));
+                .busy_timeout(std::time::Duration::from_millis(5000))
+                .pragma("journal_mode", "WAL")
+                .pragma("synchronous", "NORMAL");
             let pool = tauri::async_runtime::block_on(async {
                 sqlx::sqlite::SqlitePoolOptions::new()
                     .max_connections(10)
