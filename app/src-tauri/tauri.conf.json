@@ -1,19 +1,16 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "sentinelnms",
-  "version": "3.0.0",
+  "version": "3.0.2-beta",
   "identifier": "com.navwireless.vardhanNMS",
   "build": {
-    "frontendDist": "../frontend/dist",
-    "devUrl": "http://localhost:3000",
-    "beforeDevCommand": "npm run dev --prefix frontend",
-    "beforeBuildCommand": ""
+    "frontendDist": "../frontend/dist"
   },
   "app": {
     "withGlobalTauri": true,
     "windows": [],
     "security": {
-      "csp": null
+      "csp": "default-src 'self' tauri: 'unsafe-inline' 'unsafe-eval'; img-src 'self' asset: tauri: https://*.tile.openstreetmap.org https://tile.openstreetmap.org https://*.basemaps.cartocdn.com https://basemaps.cartocdn.com data: blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; script-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src 'self' ipc: tauri: http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* https://*.tile.openstreetmap.org https://tile.openstreetmap.org https://*.basemaps.cartocdn.com https://basemaps.cartocdn.com;"
     }
   },
   "bundle": {

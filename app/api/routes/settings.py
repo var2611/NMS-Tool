@@ -3,9 +3,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
 from typing import Optional
-from core.database import get_db, SystemSetting
+from core.database import get_db, SystemSetting, User
 from core.config import settings
 from core.sync_agent import sync_agent
+from api.routes.auth import require_admin
 
 router = APIRouter()
 
@@ -82,7 +83,7 @@ async def get_settings(db: AsyncSession = Depends(get_db)):
     }
 
 @router.put("/snmp")
-async def save_snmp_settings(data: SnmpSettingsUpdate, db: AsyncSession = Depends(get_db)):
+async def save_snmp_settings(data: SnmpSettingsUpdate, db: AsyncSession = Depends(get_db), _admin: User = Depends(require_admin)):
     """Save SNMP poll timeout (2–15 seconds) and poll_interval (1–15 seconds) to DB."""
     timeout = max(2, min(15, data.timeout))
     await _save_setting("snmp_timeout", str(timeout), db)
@@ -145,7 +146,7 @@ def _write_env_settings(**kwargs):
 
 
 @router.post("/sync")
-async def configure_sync(data: SyncConfig, db: AsyncSession = Depends(get_db)):
+async def configure_sync(data: SyncConfig, db: AsyncSession = Depends(get_db), _admin: User = Depends(require_admin)):
     """Configure cloud sync settings (desktop mode only)."""
     if settings.is_server:
         return {"error": "Sync config not applicable in server mode"}
@@ -190,7 +191,7 @@ async def configure_sync(data: SyncConfig, db: AsyncSession = Depends(get_db)):
     return {"message": "Sync configured and started", "status": sync_agent.status}
 
 @router.post("/sync/test")
-async def test_sync():
+async def test_sync(_admin: User = Depends(require_admin)):
     """Test connection to sync server. Fails if the URL points to another desktop app."""
     import httpx
     url = settings.sync_server_url
@@ -239,7 +240,7 @@ async def test_sync():
         return {"success": False, "error": f"Cannot reach server: {e}"}
 
 @router.post("/smtp/test")
-async def test_smtp(data: SmtpConfig):
+async def test_smtp(data: SmtpConfig, _admin: User = Depends(require_admin)):
     import smtplib
     try:
         with smtplib.SMTP(data.host, data.port, timeout=5) as s:
@@ -250,7 +251,7 @@ async def test_smtp(data: SmtpConfig):
         return {"success": False, "error": str(e)}
 
 @router.put("/custom/{key}")
-async def set_setting(key: str, value: str, db: AsyncSession = Depends(get_db)):
+async def set_setting(key: str, value: str, db: AsyncSession = Depends(get_db), _admin: User = Depends(require_admin)):
     result = await db.execute(select(SystemSetting).where(SystemSetting.key == key))
     row = result.scalar_one_or_none()
     if row:

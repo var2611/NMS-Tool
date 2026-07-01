@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { NavLink } from 'react-router-dom'
+import { createPortal } from 'react-dom'
+import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { useStore } from '../store'
 import UpdateBanner from './UpdateBanner'
 import {
@@ -36,12 +37,22 @@ export default function Layout({ children }) {
   const [errorMsg, setErrorMsg] = useState('')
   const [loadingUnlock, setLoadingUnlock] = useState(false)
 
+  const location = useLocation()
+  const navigate = useNavigate()
+
   const handleToggleAdvance = () => {
     if (advanceFeaturesEnabled) {
       setAdvanceFeaturesEnabled(false)
       toast.success('Admin features locked.')
     } else {
-      setShowUnlockModal(true)
+      if (!location.pathname.startsWith('/devices')) {
+        navigate('/devices')
+        setTimeout(() => {
+          setShowUnlockModal(true)
+        }, 300)
+      } else {
+        setShowUnlockModal(true)
+      }
     }
   }
 
@@ -176,8 +187,8 @@ export default function Layout({ children }) {
         </main>
       </div>
 
-      {showUnlockModal && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
+      {showUnlockModal && createPortal(
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[100000]" style={{ transform: 'translate3d(0,0,0)', backfaceVisibility: 'hidden' }}>
           <div className="bg-white dark:bg-gray-800 p-6 rounded-xl max-w-sm w-full border border-gray-200 dark:border-gray-700 shadow-xl space-y-4">
             <div>
               <h3 className="text-lg font-bold text-gray-950 dark:text-white flex items-center gap-2">
@@ -229,7 +240,8 @@ export default function Layout({ children }) {
               </div>
             </form>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   )

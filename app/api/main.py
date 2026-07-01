@@ -37,8 +37,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Ensure data directories exist
-Path("./data/mibs").mkdir(parents=True, exist_ok=True)
-Path("./data").mkdir(parents=True, exist_ok=True)
+try:
+    db_dir = Path(settings.sqlite_db_path).parent
+    db_dir.mkdir(parents=True, exist_ok=True)
+    (db_dir / "mibs").mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
 
 
 @asynccontextmanager
@@ -116,6 +120,7 @@ app.include_router(auth.router,           prefix=f"{API_PREFIX}/auth",      tags
 app.include_router(mibs.router,           prefix=f"{API_PREFIX}/mibs",      tags=["MIBs"])
 app.include_router(sync_router.router,    prefix=f"{API_PREFIX}/sync",      tags=["Sync"])
 app.include_router(internal.router,       prefix=f"{API_PREFIX}/internal",  tags=["Internal"])
+app.include_router(settings_router.router,prefix=f"{API_PREFIX}/settings",  tags=["Settings"])
 
 # Server-only routers (handled directly by Rust Tauri in desktop mode)
 if not settings.is_desktop:
@@ -124,7 +129,6 @@ if not settings.is_desktop:
     app.include_router(traps.router,          prefix=f"{API_PREFIX}/traps",     tags=["Traps"])
     app.include_router(alerts.router,         prefix=f"{API_PREFIX}/alerts",    tags=["Alerts"])
     app.include_router(reports.router,        prefix=f"{API_PREFIX}/reports",   tags=["Reports"])
-    app.include_router(settings_router.router,prefix=f"{API_PREFIX}/settings",  tags=["Settings"])
     app.include_router(update_router.router,  prefix=f"{API_PREFIX}/update",    tags=["Update"])
     app.include_router(ws_router.router,      prefix="",                        tags=["WebSocket"])
 

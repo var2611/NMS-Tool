@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { useStore } from '../store'
 import { devicesApi, mibsApi } from '../utils/api'
@@ -103,7 +104,7 @@ export function DeviceModal({ device, onClose, onSaved }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
       <div className="bg-white dark:bg-gray-900 rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between p-5 border-b border-gray-100 dark:border-gray-700">
           <div>
@@ -598,8 +599,8 @@ export default function Devices() {
           )}
         </div>
       )}
-      {showUnlockPrompt && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
+      {showUnlockPrompt && createPortal(
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[100000]" style={{ transform: 'translate3d(0,0,0)', backfaceVisibility: 'hidden' }}>
           <div className="bg-white dark:bg-gray-800 p-6 rounded-xl max-w-sm w-full border border-gray-200 dark:border-gray-700 shadow-xl space-y-4 text-left">
             <div>
               <h3 className="text-lg font-bold text-gray-950 dark:text-white flex items-center gap-2">
@@ -652,7 +653,8 @@ export default function Devices() {
               </div>
             </form>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   )

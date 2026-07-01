@@ -3,7 +3,7 @@ from PyInstaller.utils.hooks import collect_all
 
 datas = [('api', 'api'), ('core', 'core'), ('frontend/dist', 'frontend/dist')]
 binaries = []
-hiddenimports = ['email.mime.text', 'email.mime.multipart', 'email.mime.base', 'email.utils', 'smtplib', 'ssl', 'ipaddress', 'uvicorn.logging', 'uvicorn.loops.auto', 'uvicorn.loops.asyncio', 'uvicorn.protocols.http.auto', 'uvicorn.protocols.http.h11_impl', 'uvicorn.protocols.websockets.auto', 'uvicorn.protocols.websockets.websockets_impl', 'uvicorn.lifespan.on', 'uvicorn.lifespan.off', 'sqlalchemy.sql.default_comparator', 'sqlalchemy.dialects.sqlite', 'sqlalchemy.dialects.sqlite.aiosqlite']
+hiddenimports = ['email.mime.text', 'email.mime.multipart', 'email.mime.base', 'email.utils', 'smtplib', 'ssl', 'ipaddress', 'uvicorn.logging', 'uvicorn.loops.auto', 'uvicorn.loops.asyncio', 'uvicorn.protocols.http.auto', 'uvicorn.protocols.http.h11_impl', 'uvicorn.protocols.websockets.auto', 'uvicorn.protocols.websockets.websockets_impl', 'uvicorn.lifespan.on', 'uvicorn.lifespan.off', 'sqlalchemy.sql.default_comparator', 'sqlalchemy.dialects.sqlite', 'sqlalchemy.dialects.sqlite.aiosqlite', 'greenlet']
 tmp_ret = collect_all('uvicorn')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('fastapi')

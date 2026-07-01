@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { updateApi } from '../utils/api'
 import { useStore } from '../store'
 import {
@@ -73,8 +74,8 @@ function UpdateProgressModal({ onClose }) {
   const queuedTooLong = queued && Date.now() - startedRef.current > 3 * 60 * 1000
   const alreadyUpToDate = finished && !status?.to
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+  return createPortal(
+    <div className="fixed inset-0 z-[100000] flex items-center justify-center p-4 bg-black/70" style={{ transform: 'translate3d(0,0,0)', backfaceVisibility: 'hidden' }}>
       <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
 
         {/* Header */}
@@ -108,18 +109,19 @@ function UpdateProgressModal({ onClose }) {
                     : st === 'error' ? 'bg-red-100 dark:bg-red-900/30'
                     : 'bg-gray-100 dark:bg-gray-800')}>
                     {st === 'done' ? <CheckCircle size={15} className="text-green-500" />
-                      : st === 'active' ? <Loader size={15} className="text-teal-600 animate-spin" />
                       : st === 'error' ? <XCircle size={15} className="text-red-500" />
-                      : <span className="w-1.5 h-1.5 rounded-full bg-gray-300 dark:bg-gray-600" />}
+                      : st === 'active' ? <Loader size={15} className="animate-spin text-teal-600" />
+                      : <span className="w-1.5 h-1.5 rounded-full bg-gray-400 dark:bg-gray-600" />}
                   </div>
                   <div className="min-w-0">
                     <p className={clsx('text-sm font-medium',
-                      st === 'pending' ? 'text-gray-400' : 'text-gray-800 dark:text-gray-200')}>
-                      {s.label}
-                    </p>
-                    <p className="text-xs text-gray-400">
-                      {st === 'active' ? (status?.message || s.desc) : st === 'error' ? (status?.error || s.desc) : s.desc}
-                    </p>
+                      st === 'active' ? 'text-teal-600 dark:text-teal-400'
+                      : st === 'done' ? 'text-gray-950 dark:text-white font-normal'
+                      : 'text-gray-400 dark:text-gray-600')}>{s.label}</p>
+                    {st === 'active' && <p className="text-xs text-gray-400 mt-0.5">{s.desc}</p>}
+                    {st === 'error' && status.message && (
+                      <p className="text-xs text-red-500 font-medium mt-1">{status.message}</p>
+                    )}
                   </div>
                 </div>
               )
@@ -127,13 +129,6 @@ function UpdateProgressModal({ onClose }) {
           </div>
         )}
 
-        {/* Reconnecting banner */}
-        {offline && !finished && !failed && (
-          <div className="mx-6 mb-4 flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300 text-xs">
-            <WifiOff size={13} className="flex-shrink-0" />
-            Server is restarting — reconnecting automatically…
-          </div>
-        )}
 
         {/* Queued for too long */}
         {queuedTooLong && (

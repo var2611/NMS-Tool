@@ -146,7 +146,7 @@ function RuleModal({ initial, onClose, onSave, standardTypes }) {
   }
 
   return (
-    <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+    <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999] p-4">
       <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto p-6">
         <h3 className="text-lg font-semibold mb-4 text-gray-900 dark:text-white">
           {isEdit ? 'Edit Rule' : 'New Trap Rule'}

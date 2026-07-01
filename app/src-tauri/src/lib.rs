@@ -178,55 +178,66 @@ async fn forward_to_sidecar(
 ) -> Result<serde_json::Value, String> {
     let client = reqwest::Client::new();
     let url = format!("http://127.0.0.1:{}/api/v1{}", port, path);
-    
-    let mut req = match method {
-        "GET" => client.get(&url),
-        "POST" => client.post(&url),
-        "PUT" => client.put(&url),
-        "PATCH" => client.patch(&url),
-        "DELETE" => client.delete(&url),
-        _ => return Err(format!("Unsupported method: {}", method)),
-    };
-    
-    req = req.header("X-Secret-Token", token);
-    
-    if let Some(map) = params.as_object() {
-        let mut query_items = Vec::new();
-        for (k, v) in map {
-            if let Some(s) = v.as_str() {
-                query_items.push((k.clone(), s.to_string()));
-            } else {
-                query_items.push((k.clone(), v.to_string()));
-            }
-        }
-        req = req.query(&query_items);
-    }
-    
-    if !data.is_null() {
-        req = req.json(data);
-    }
-    
-    match req.send().await {
-        Ok(resp) => {
-            let status = resp.status();
-            let text = resp.text().await.map_err(|e| e.to_string())?;
-            if status.is_success() {
-                if text.trim().is_empty() {
-                    Ok(serde_json::Value::Object(serde_json::Map::new()))
+    let max_retries = 30;
+
+    for attempt in 0..=max_retries {
+        let mut req = match method {
+            "GET" => client.get(&url),
+            "POST" => client.post(&url),
+            "PUT" => client.put(&url),
+            "PATCH" => client.patch(&url),
+            "DELETE" => client.delete(&url),
+            _ => return Err(format!("Unsupported method: {}", method)),
+        };
+        
+        req = req.header("X-Secret-Token", token);
+        
+        if let Some(map) = params.as_object() {
+            let mut query_items = Vec::new();
+            for (k, v) in map {
+                if let Some(s) = v.as_str() {
+                    query_items.push((k.clone(), s.to_string()));
                 } else {
-                    serde_json::from_str(&text).map_err(|e| format!("Invalid JSON response: {}. Raw: {}", e, text))
+                    query_items.push((k.clone(), v.to_string()));
                 }
-            } else {
-                if let Ok(json_err) = serde_json::from_str::<serde_json::Value>(&text) {
-                    if let Some(detail) = json_err.get("detail") {
-                        return Err(detail.as_str().unwrap_or(&detail.to_string()).to_string());
+            }
+            req = req.query(&query_items);
+        }
+        
+        if !data.is_null() {
+            req = req.json(data);
+        }
+        
+        match req.send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                let text = resp.text().await.map_err(|e| e.to_string())?;
+                if status.is_success() {
+                    if text.trim().is_empty() {
+                        return Ok(serde_json::Value::Object(serde_json::Map::new()));
+                    } else {
+                        return serde_json::from_str(&text).map_err(|e| format!("Invalid JSON response: {}. Raw: {}", e, text));
                     }
+                } else {
+                    if let Ok(json_err) = serde_json::from_str::<serde_json::Value>(&text) {
+                        if let Some(detail) = json_err.get("detail") {
+                            return Err(detail.as_str().unwrap_or(&detail.to_string()).to_string());
+                        }
+                    }
+                    return Err(format!("HTTP Error {}: {}", status, text));
                 }
-                Err(format!("HTTP Error {}: {}", status, text))
+            }
+            Err(e) => {
+                if attempt < max_retries {
+                    log::warn!("Sidecar not ready (attempt {}/{}), retrying in 1s: {}", attempt + 1, max_retries, e);
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                } else {
+                    return Err(format!("Failed to reach sidecar after {} retries: {}", max_retries, e));
+                }
             }
         }
-        Err(e) => Err(format!("Failed to reach sidecar: {}", e)),
     }
+    Err("Failed to reach sidecar: max retries exhausted".to_string())
 }
 
 #[tauri::command]
@@ -1331,6 +1342,12 @@ fn open_path_or_url(path: &str) {
     std::process::Command::new("cmd").args(&["/c", "start", path]).spawn().ok();
 }
 
+#[tauri::command]
+fn log_frontend_msg(msg: String) {
+    log::info!("[FRONTEND] {}", msg);
+}
+
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let port = get_free_port(8765);
@@ -1352,7 +1369,8 @@ pub fn run() {
             install_update_now,
             check_for_updates_now,
             open_releases_page,
-            handle_api_request
+            handle_api_request,
+            log_frontend_msg
         ])
         .setup(move |app| {
             let app_dir = app.path().app_data_dir().expect("Failed to get AppData directory");
@@ -1402,11 +1420,15 @@ pub fn run() {
             }
 
             // Create SQLite Connection Pool and manage it
+            use std::str::FromStr;
             let db_url = format!("sqlite://{}?mode=rwc", db_path);
+            let connect_options = sqlx::sqlite::SqliteConnectOptions::from_str(&db_url)
+                .expect("Failed to parse SQLite connection URL")
+                .busy_timeout(std::time::Duration::from_millis(5000));
             let pool = tauri::async_runtime::block_on(async {
                 sqlx::sqlite::SqlitePoolOptions::new()
                     .max_connections(10)
-                    .connect(&db_url)
+                    .connect_with(connect_options)
                     .await
                     .expect("Failed to connect to SQLite")
             });
@@ -1524,8 +1546,15 @@ pub fn run() {
             let open_logs_i = MenuItem::with_id(app, "open_logs", "Open Logs Folder", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open_i, &open_db_i, &open_logs_i, &quit_i])?;
 
+            let icon = app.default_window_icon()
+                .cloned()
+                .unwrap_or_else(|| {
+                    tauri::image::Image::from_bytes(include_bytes!("../icons/128x128.png"))
+                        .expect("failed to load fallback icon")
+                });
+
             let _tray = TrayIconBuilder::new()
-                .icon(app.default_window_icon().unwrap().clone())
+                .icon(icon)
                 .menu(&menu)
                 .on_menu_event(move |handle, event| {
                     match event.id.as_ref() {

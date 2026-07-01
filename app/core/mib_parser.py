@@ -10,8 +10,12 @@ from typing import Dict, Optional, List, Tuple
 
 logger = logging.getLogger(__name__)
 
-MIB_DIR = Path("./data/mibs")
-MIB_DIR.mkdir(parents=True, exist_ok=True)
+from core.config import settings
+MIB_DIR = Path(settings.sqlite_db_path).parent / "mibs"
+try:
+    MIB_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
 
 # Built-in OID knowledge base (common OIDs → friendly names)
 BUILTIN_OID_MAP: Dict[str, Dict] = {
