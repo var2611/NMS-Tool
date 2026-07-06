@@ -14,49 +14,23 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  RUSTUP_HOME: 'C:\zzz\rustup'
-  CARGO_HOME: 'C:\zzz\cargo'
 
 jobs:
   build-windows:
-    runs-on: [self-hosted, windows]
+    runs-on: windows-latest
     name: Build Windows (x86_64 Native)
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Locate and Setup Python
-        shell: powershell
-        run: |
-          $pythonDir = "C:\zzz\python"
-          if (Test-Path (Join-Path $pythonDir "python.exe")) {
-              Write-Host "Using static Python installation at: $pythonDir"
-              $pythonDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-              "$pythonDir\Scripts" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          } else {
-              Write-Error "Python not found at static path: $pythonDir"
-              exit 1
-          }
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-      - name: Locate and Setup Rust (Cargo)
-        shell: powershell
-        run: |
-          $cargoDir = "C:\zzz\cargo\bin"
-          if (Test-Path (Join-Path $cargoDir "cargo.exe")) {
-              Write-Host "Using static Cargo path: $cargoDir"
-              $cargoDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          } else {
-              # Fallback: check if cargo is in PATH
-              $cargoCmd = Get-Command cargo -ErrorAction SilentlyContinue
-              if ($cargoCmd) {
-                  $cargoDir = Split-Path -Path $cargoCmd.Source -Parent
-                  Write-Host "Found Cargo in PATH: $cargoDir"
-                  $cargoDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-              } else {
-                  Write-Error "Cargo not found at static path: $cargoDir or in PATH."
-                  exit 1
-              }
-          }
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
 
       - name: Set up MSVC Developer Command Prompt
         uses: ilammy/msvc-dev-cmd@v1
