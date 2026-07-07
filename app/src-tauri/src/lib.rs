@@ -455,9 +455,12 @@ async fn handle_api_request(
             };
 
             let cur_name = existing.try_get::<String, _>("name").unwrap_or_default();
-            let cur_device_type = existing.try_get::<Option<String>, _>("device_type").unwrap_or(None).unwrap_or_else(|| "unknown".to_string());
-            let cur_snmp_community = existing.try_get::<Option<String>, _>("snmp_community").unwrap_or(None).unwrap_or_else(|| "public".to_string());
-            let cur_snmp_version = existing.try_get::<Option<String>, _>("snmp_version").unwrap_or(None).unwrap_or_else(|| "v2c".to_string());
+            let cur_device_type = existing.try_get::<String, _>("device_type")
+                .unwrap_or_else(|_| existing.try_get::<Option<String>, _>("device_type").ok().flatten().unwrap_or_else(|| "unknown".to_string()));
+            let cur_snmp_community = existing.try_get::<String, _>("snmp_community")
+                .unwrap_or_else(|_| existing.try_get::<Option<String>, _>("snmp_community").ok().flatten().unwrap_or_else(|| "public".to_string()));
+            let cur_snmp_version = existing.try_get::<String, _>("snmp_version")
+                .unwrap_or_else(|_| existing.try_get::<Option<String>, _>("snmp_version").ok().flatten().unwrap_or_else(|| "v2c".to_string()));
             let cur_snmp_port = get_opt_int_column(&existing, "snmp_port").unwrap_or(161);
             let cur_poll_interval = get_opt_int_column(&existing, "poll_interval").unwrap_or(300);
             let cur_notes = existing.try_get::<Option<String>, _>("notes").unwrap_or(None);

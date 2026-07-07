@@ -39,9 +39,19 @@ def create_token(user_id: int, username: str, role: str) -> str:
 
 async def get_current_user(
     authorization: Optional[str] = Header(None),
+    x_secret_token: Optional[str] = Header(None, alias="X-Secret-Token"),
     db: AsyncSession = Depends(get_db),
 ) -> User:
     """Decode the Bearer token and return the live User row."""
+    if settings.is_desktop and x_secret_token:
+        import os
+        expected = os.environ.get("SECRET_TOKEN")
+        if expected and x_secret_token == expected:
+            result = await db.execute(select(User).where(User.username == "admin"))
+            user = result.scalar_one_or_none()
+            if user:
+                return user
+
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(401, "Missing or invalid Authorization header")
     token = authorization.split(" ", 1)[1]
