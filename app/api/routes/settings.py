@@ -7,6 +7,10 @@ from core.database import get_db, SystemSetting, User
 from core.config import settings
 from core.sync_agent import sync_agent
 from api.routes.auth import require_admin
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 router = APIRouter()
 
@@ -85,20 +89,24 @@ async def get_settings(db: AsyncSession = Depends(get_db)):
 @router.put("/snmp")
 async def save_snmp_settings(data: SnmpSettingsUpdate, db: AsyncSession = Depends(get_db), _admin: User = Depends(require_admin)):
     """Save SNMP poll timeout (2–15 seconds) and poll_interval (1–15 seconds) to DB."""
-    timeout = max(2, min(15, data.timeout))
-    await _save_setting("snmp_timeout", str(timeout), db)
-    
-    poll_interval = None
-    if data.poll_interval is not None:
-        poll_interval = max(1, min(15, data.poll_interval))
-        await _save_setting("poll_interval", str(poll_interval), db)
+    try:
+        timeout = max(2, min(15, data.timeout))
+        await _save_setting("snmp_timeout", str(timeout), db)
         
-    await db.commit()
-    
-    res = {"timeout": timeout}
-    if poll_interval is not None:
-        res["poll_interval"] = poll_interval
-    return res
+        poll_interval = None
+        if data.poll_interval is not None:
+            poll_interval = max(1, min(15, data.poll_interval))
+            await _save_setting("poll_interval", str(poll_interval), db)
+            
+        await db.commit()
+        
+        res = {"timeout": timeout}
+        if poll_interval is not None:
+            res["poll_interval"] = poll_interval
+        return res
+    except Exception as e:
+        logger.exception("Error in save_snmp_settings")
+        raise
 
 def _write_env_settings(**kwargs):
     """
@@ -148,47 +156,51 @@ def _write_env_settings(**kwargs):
 @router.post("/sync")
 async def configure_sync(data: SyncConfig, db: AsyncSession = Depends(get_db), _admin: User = Depends(require_admin)):
     """Configure cloud sync settings (desktop mode only)."""
-    if settings.is_server:
-        return {"error": "Sync config not applicable in server mode"}
-
-    site = data.site_name.strip() or settings.sync_site_name or "Desktop-Agent"
-
-    # 1. Persist to DB (primary source of truth — survives restarts reliably)
-    for key, value in [
-        ("sync_server_url",      data.server_url),
-        ("sync_site_name",       site),
-        ("sync_interval_minutes", str(data.interval_minutes)),
-        ("sync_enabled",         "true"),
-    ]:
-        await _save_setting(key, value, db)
-    await db.commit()
-
-    # 2. Also write to .env so the values are loaded on next cold start
-    #    (belt-and-suspenders: DB is the primary, .env is the bootstrap)
-    _write_env_settings(
-        SYNC_ENABLED="true",
-        SYNC_SERVER_URL=data.server_url,
-        SYNC_API_KEY=data.api_key,
-        SYNC_SITE_NAME=site,
-        SYNC_INTERVAL_MINUTES=str(data.interval_minutes),
-    )
-
-    # 3. Update in-memory settings for this session
-    settings.sync_enabled = True
-    settings.sync_server_url = data.server_url
-    settings.sync_api_key = data.api_key
-    settings.sync_site_name = site
-    settings.sync_interval_minutes = data.interval_minutes
-
-    # 4. Live-restart sync agent
-    await sync_agent.reconfigure(
-        server_url=data.server_url,
-        api_key=data.api_key,
-        site_name=site,
-        interval_minutes=data.interval_minutes,
-    )
-
-    return {"message": "Sync configured and started", "status": sync_agent.status}
+    try:
+        if settings.is_server:
+            return {"error": "Sync config not applicable in server mode"}
+    
+        site = data.site_name.strip() or settings.sync_site_name or "Desktop-Agent"
+    
+        # 1. Persist to DB (primary source of truth — survives restarts reliably)
+        for key, value in [
+            ("sync_server_url",      data.server_url),
+            ("sync_site_name",       site),
+            ("sync_interval_minutes", str(data.interval_minutes)),
+            ("sync_enabled",         "true"),
+        ]:
+            await _save_setting(key, value, db)
+        await db.commit()
+    
+        # 2. Also write to .env so the values are loaded on next cold start
+        #    (belt-and-suspenders: DB is the primary, .env is the bootstrap)
+        _write_env_settings(
+            SYNC_ENABLED="true",
+            SYNC_SERVER_URL=data.server_url,
+            SYNC_API_KEY=data.api_key,
+            SYNC_SITE_NAME=site,
+            SYNC_INTERVAL_MINUTES=str(data.interval_minutes),
+        )
+    
+        # 3. Update in-memory settings for this session
+        settings.sync_enabled = True
+        settings.sync_server_url = data.server_url
+        settings.sync_api_key = data.api_key
+        settings.sync_site_name = site
+        settings.sync_interval_minutes = data.interval_minutes
+    
+        # 4. Live-restart sync agent
+        await sync_agent.reconfigure(
+            server_url=data.server_url,
+            api_key=data.api_key,
+            site_name=site,
+            interval_minutes=data.interval_minutes,
+        )
+    
+        return {"message": "Sync configured and started", "status": sync_agent.status}
+    except Exception as e:
+        logger.exception("Error in configure_sync")
+        raise
 
 @router.post("/sync/test")
 async def test_sync(_admin: User = Depends(require_admin)):

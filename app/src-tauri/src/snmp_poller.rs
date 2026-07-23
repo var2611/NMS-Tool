@@ -550,6 +550,7 @@ async fn ping_latency(ip: &str, timeout_secs: f64) -> Option<f64> {
     let mut cmd_builder = tokio::process::Command::new("ping");
     cmd_builder
         .args(&cmd)
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
 

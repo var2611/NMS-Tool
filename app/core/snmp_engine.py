@@ -218,6 +218,7 @@ async def ping_host(ip: str, timeout: float = 1.0) -> bool:
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
             **kwargs
@@ -492,6 +493,7 @@ async def ping_latency(ip: str, timeout: float = 2.0) -> Optional[float]:
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
             **kwargs
